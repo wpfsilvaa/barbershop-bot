@@ -31,7 +31,8 @@ import {
   DollarSign,
   CheckCircle,
   Megaphone,
-  BookOpen
+  BookOpen,
+  Star
 } from 'lucide-react';
 
 interface FlowNode {
@@ -127,7 +128,7 @@ export const Dashboard: React.FC = () => {
   const { user, logout, reloadUser } = useAuth();
   const { establishment, updateThemeColors } = useEstablishmentTheme();
   
-  const [activeTab, setActiveTab] = useState<'appointments' | 'chats' | 'barbers' | 'services' | 'my_services' | 'plans' | 'flowchart' | 'bot' | 'settings' | 'super_admin' | 'metrics' | 'clients'>(user?.role === 'admin' ? 'super_admin' : 'appointments');
+  const [activeTab, setActiveTab] = useState<'appointments' | 'chats' | 'barbers' | 'services' | 'my_services' | 'plans' | 'flowchart' | 'bot' | 'settings' | 'super_admin' | 'metrics' | 'clients' | 'feedbacks'>(user?.role === 'admin' ? 'super_admin' : 'appointments');
 
   // Bot Chats States
   const [activeChats, setActiveChats] = useState<any[]>([]);
@@ -163,6 +164,10 @@ export const Dashboard: React.FC = () => {
   // Promo Campaign
   const [promoCampaignText, setPromoCampaignText] = useState<string>('');
   const [sendingPromoCampaign, setSendingPromoCampaign] = useState<boolean>(false);
+
+  // Feedbacks States
+  const [feedbacks, setFeedbacks] = useState<any[]>([]);
+  const [loadingFeedbacks, setLoadingFeedbacks] = useState<boolean>(false);
 
   // Filter states
   const [filterDate, setFilterDate] = useState(new Date().toISOString().split('T')[0]);
@@ -529,12 +534,28 @@ export const Dashboard: React.FC = () => {
     }
   };
 
+  const loadFeedbacks = async () => {
+    if (!user?.establishment_id) return;
+    setLoadingFeedbacks(true);
+    try {
+      const data = await apiRequest(`/establishments/${user.establishment_id}/feedbacks`, 'GET');
+      setFeedbacks(data);
+    } catch (err: any) {
+      showToast(err.message || 'Erro ao carregar avaliações.', 'error');
+    } finally {
+      setLoadingFeedbacks(false);
+    }
+  };
+
   useEffect(() => {
     loadData();
     loadBotStatus();
     if (activeTab === 'clients') {
       loadClients();
       loadPromoConfig();
+    }
+    if (activeTab === 'feedbacks') {
+      loadFeedbacks();
     }
     
     const interval = setInterval(() => {
@@ -1953,6 +1974,19 @@ export const Dashboard: React.FC = () => {
               >
                 <Users size={18} />
                 <span>Contatos & Marketing</span>
+              </button>
+              <button 
+                className="btn-secondary" 
+                style={{ 
+                  justifyContent: 'flex-start', 
+                  border: activeTab === 'feedbacks' ? '1px solid var(--primary)' : '1px solid transparent',
+                  color: activeTab === 'feedbacks' ? 'var(--primary)' : 'var(--foreground)',
+                  backgroundColor: activeTab === 'feedbacks' ? 'rgba(212, 175, 55, 0.05)' : 'transparent'
+                }} 
+                onClick={() => setActiveTab('feedbacks')}
+              >
+                <Star size={18} />
+                <span>Avaliações</span>
               </button>
             </>
           )}
@@ -4548,6 +4582,108 @@ export const Dashboard: React.FC = () => {
                 )}
 
               </div>
+            </div>
+          )}
+
+          {/* TAB: FEEDBACKS / EVALUATIONS */}
+          {activeTab === 'feedbacks' && (
+            <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+              <div>
+                <h2 style={{ fontSize: '24px', marginBottom: '8px' }}>Avaliações dos Clientes</h2>
+                <p style={{ color: 'var(--muted)', fontSize: '14px' }}>
+                  Acompanhe a opinião dos clientes sobre os atendimentos realizados e identifique pontos de melhoria.
+                </p>
+              </div>
+
+              {/* Summary Cards */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '20px' }}>
+                <div className="card-premium" style={{ display: 'flex', alignItems: 'center', gap: '16px', padding: '24px' }}>
+                  <div style={{ width: '48px', height: '48px', borderRadius: '50%', background: 'rgba(212, 175, 55, 0.1)', display: 'flex', justifyContent: 'center', alignItems: 'center', color: 'var(--primary)' }}>
+                    <Star size={24} fill="var(--primary)" />
+                  </div>
+                  <div>
+                    <span style={{ fontSize: '13px', color: 'var(--muted)' }}>Nota Média Geral</span>
+                    <h3 style={{ fontSize: '28px', fontWeight: 'bold', marginTop: '4px', display: 'flex', alignItems: 'baseline', gap: '6px' }}>
+                      {feedbacks.length > 0 
+                        ? (feedbacks.reduce((sum, f) => sum + f.rating, 0) / feedbacks.length).toFixed(1)
+                        : '0.0'}
+                      <span style={{ fontSize: '14px', color: 'var(--muted)', fontWeight: 'normal' }}>/ 5.0</span>
+                    </h3>
+                  </div>
+                </div>
+
+                <div className="card-premium" style={{ display: 'flex', alignItems: 'center', gap: '16px', padding: '24px' }}>
+                  <div style={{ width: '48px', height: '48px', borderRadius: '50%', background: 'rgba(255, 255, 255, 0.05)', display: 'flex', justifyContent: 'center', alignItems: 'center', color: 'var(--muted)' }}>
+                    <BookOpen size={24} />
+                  </div>
+                  <div>
+                    <span style={{ fontSize: '13px', color: 'var(--muted)' }}>Total de Avaliações</span>
+                    <h3 style={{ fontSize: '28px', fontWeight: 'bold', marginTop: '4px' }}>{feedbacks.length}</h3>
+                  </div>
+                </div>
+              </div>
+
+              {/* Feedbacks Grid List */}
+              {loadingFeedbacks ? (
+                <div style={{ display: 'flex', justifyContent: 'center', padding: '40px', color: 'var(--muted)' }}>
+                  <RefreshCw size={24} className="animate-spin" />
+                </div>
+              ) : feedbacks.length === 0 ? (
+                <div className="card-premium" style={{ padding: '40px', textAlign: 'center', color: 'var(--muted)' }}>
+                  Nenhuma avaliação registrada até o momento.
+                </div>
+              ) : (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '20px' }}>
+                  {feedbacks.map((f) => (
+                    <div key={f.id} className="card-premium" style={{ display: 'flex', flexDirection: 'column', gap: '12px', padding: '20px', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '8px' }}>
+                      
+                      {/* Rating & Date */}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div style={{ display: 'flex' }}>
+                          {Array.from({ length: 5 }, (_, idx) => (
+                            <Star 
+                              key={idx} 
+                              size={15} 
+                              fill={idx < f.rating ? 'var(--primary)' : 'none'} 
+                              color={idx < f.rating ? 'var(--primary)' : 'rgba(255,255,255,0.2)'} 
+                              style={{ marginRight: '2px' }}
+                            />
+                          ))}
+                        </div>
+                        <span style={{ fontSize: '12px', color: 'var(--muted)' }}>
+                          {new Date(f.created_at).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}
+                        </span>
+                      </div>
+
+                      {/* Comment */}
+                      <div style={{ flex: 1, minHeight: '60px', fontSize: '14px', color: 'var(--foreground)', lineHeight: '1.4' }}>
+                        {f.comment ? (
+                          `"${f.comment}"`
+                        ) : (
+                          <span style={{ color: 'var(--muted)', fontStyle: 'italic', opacity: 0.5 }}>Sem comentário adicional.</span>
+                        )}
+                      </div>
+
+                      {/* Client info & Barber info */}
+                      <div style={{ borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '10px', display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '12px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <span style={{ color: 'var(--muted)' }}>Cliente:</span>
+                          <span style={{ fontWeight: '500' }}>{f.client_name} ({f.client_phone})</span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <span style={{ color: 'var(--muted)' }}>Profissional:</span>
+                          <span style={{ fontWeight: '500', color: 'var(--primary)' }}>{f.barber_name}</span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <span style={{ color: 'var(--muted)' }}>Serviço:</span>
+                          <span>{f.service_name}</span>
+                        </div>
+                      </div>
+
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 

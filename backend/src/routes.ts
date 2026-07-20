@@ -27,7 +27,8 @@ import {
   updateEstablishmentClient, 
   getPromoConfig, 
   updatePromoConfig, 
-  sendPromoCampaign 
+  sendPromoCampaign,
+  listEstablishmentFeedbacks
 } from './controllers/crmController';
 import { verifyToken, requireRole, checkEstablishmentAccess, AuthenticatedRequest } from './middleware/auth';
 import { authRateLimiter, apiRateLimiter } from './middleware/security';
@@ -284,6 +285,13 @@ router.post(
   checkEstablishmentAccess,
   requireRole(['owner', 'admin']),
   sendPromoCampaign
+);
+router.get(
+  '/establishments/:establishmentId/feedbacks',
+  verifyToken,
+  checkEstablishmentAccess,
+  requireRole(['owner', 'admin', 'barber']),
+  listEstablishmentFeedbacks
 );
 
 // WhatsApp Multi-Tenant Connection Manager Routes

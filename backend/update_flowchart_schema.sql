@@ -1,7 +1,7 @@
 -- Alter establishments to add bot_flow JSONB column
 ALTER TABLE establishments ADD COLUMN IF NOT EXISTS bot_flow JSONB DEFAULT '{
   "nodes": [
-    { "id": "welcome", "type": "message", "title": "Boas-Vindas", "x": 60, "y": 200, "text": "Olá! Seja bem-vindo à Barbearia. 💈\\n\\nComo posso te ajudar hoje?\\n\\n*1* - Agendar um Horário\\n*2* - Informações de Contato" },
+    { "id": "welcome", "type": "message", "title": "Boas-Vindas", "x": 60, "y": 200, "text": "Olá! Seja bem-vindo à Barbearia. " },
     { "id": "check_intent", "type": "condition", "title": "Verificar Opção", "x": 360, "y": 200, "options": [
       { "key": "1", "label": "Agendar", "target": "select_barber" },
       { "key": "2", "label": "Contato", "target": "other_help" }

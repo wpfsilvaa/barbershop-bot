@@ -46,7 +46,7 @@ CREATE TABLE establishments (
     bot_flow JSONB DEFAULT '{
       "nodes": [
         { "id": "start", "type": "start", "title": "Início", "x": 40, "y": 200 },
-        { "id": "welcome", "type": "message", "title": "Boas-Vindas", "x": 240, "y": 200, "text": "Olá! Seja bem-vindo à Barbearia. 💈\\n\\nComo posso te ajudar hoje?\\n\\n*1* - Agendar um Horário\\n*2* - Informações de Contato" },
+        { "id": "welcome", "type": "message", "title": "Boas-Vindas", "x": 240, "y": 200, "text": "Olá! Seja bem-vindo à Barbearia." },
         { "id": "check_intent", "type": "condition", "title": "Verificar Opção", "x": 540, "y": 200, "options": [
           { "key": "1", "label": "Agendar", "target": "select_barber" },
           { "key": "2", "label": "Contato", "target": "other_help" }

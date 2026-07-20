@@ -73,6 +73,7 @@ router.put('/establishments/:establishmentId/clients/:clientId', auth_1.verifyTo
 router.get('/establishments/:establishmentId/promo-config', auth_1.verifyToken, auth_1.checkEstablishmentAccess, (0, auth_1.requireRole)(['owner', 'admin']), crmController_1.getPromoConfig);
 router.put('/establishments/:establishmentId/promo-config', auth_1.verifyToken, auth_1.checkEstablishmentAccess, (0, auth_1.requireRole)(['owner', 'admin']), crmController_1.updatePromoConfig);
 router.post('/establishments/:establishmentId/send-promo', auth_1.verifyToken, auth_1.checkEstablishmentAccess, (0, auth_1.requireRole)(['owner', 'admin']), crmController_1.sendPromoCampaign);
+router.get('/establishments/:establishmentId/feedbacks', auth_1.verifyToken, auth_1.checkEstablishmentAccess, (0, auth_1.requireRole)(['owner', 'admin', 'barber']), crmController_1.listEstablishmentFeedbacks);
 // WhatsApp Multi-Tenant Connection Manager Routes
 router.get('/establishments/:establishmentId/bot/status', auth_1.verifyToken, auth_1.checkEstablishmentAccess, (0, auth_1.requireRole)(['owner', 'admin']), async (req, res) => {
     const { establishmentId } = req.params;

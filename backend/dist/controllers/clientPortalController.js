@@ -79,7 +79,10 @@ const getClientData = async (req, res) => {
        WHERE cp.client_id = $1 AND cp.is_active = true
        ORDER BY cp.created_at DESC`, [clientId]);
         // 3. Fetch all establishments (to allow booking)
-        const estRes = await db_1.default.query(`SELECT id, name, logo_url, opening_time, closing_time FROM establishments ORDER BY name ASC`);
+        const estRes = await db_1.default.query(`SELECT id, name, logo_url, address, opening_time, closing_time 
+       FROM establishments 
+       WHERE is_active = TRUE AND id != '00000000-0000-0000-0000-000000000000'::uuid 
+       ORDER BY name ASC`);
         return res.json({
             bookings: bookingsRes.rows,
             plans: plansRes.rows,

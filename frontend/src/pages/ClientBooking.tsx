@@ -403,6 +403,36 @@ export const ClientBooking: React.FC = () => {
                 </div>
               ))}
             </div>
+
+            {est.address && (
+              <div 
+                style={{ 
+                  marginTop: '16px',
+                  display: 'flex', 
+                  flexDirection: 'column', 
+                  gap: '10px', 
+                  padding: '16px', 
+                  borderRadius: '12px',
+                  background: 'rgba(255,255,255,0.02)', 
+                  border: '1px solid rgba(255,255,255,0.06)'
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: primaryColor }}>
+                  <MapPin size={14} />
+                  <span><strong>Localização:</strong> {est.address}</span>
+                </div>
+                <div style={{ width: '100%', height: '150px', borderRadius: '8px', overflow: 'hidden' }}>
+                  <iframe 
+                    width="100%" 
+                    height="100%" 
+                    frameBorder="0" 
+                    style={{ border: 0 }} 
+                    src={`https://maps.google.com/maps?q=${encodeURIComponent(est.address)}&t=&z=15&ie=UTF8&iwloc=&output=embed`} 
+                    allowFullScreen
+                  />
+                </div>
+              </div>
+            )}
           </div>
         )}
 

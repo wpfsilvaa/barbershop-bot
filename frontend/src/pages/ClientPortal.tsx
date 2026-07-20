@@ -53,6 +53,7 @@ interface Establishment {
   id: string;
   name: string;
   logo_url: string | null;
+  address?: string;
   opening_time: string;
   closing_time: string;
 }
@@ -838,6 +839,31 @@ export const ClientPortal: React.FC = () => {
                   ))}
                 </select>
               </div>
+
+              {selectedEst && (
+                (() => {
+                  const estObj = establishments.find(e => e.id === selectedEst);
+                  if (!estObj || !estObj.address) return null;
+                  return (
+                    <div className="card-premium" style={{ gridColumn: 'span 2', display: 'flex', flexDirection: 'column', gap: '12px', padding: '16px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: 'var(--primary)' }}>
+                        <MapPin size={16} />
+                        <span><strong>Endereço do Salão:</strong> {estObj.address}</span>
+                      </div>
+                      <div style={{ width: '100%', height: '180px', borderRadius: '6px', overflow: 'hidden' }}>
+                        <iframe 
+                          width="100%" 
+                          height="100%" 
+                          frameBorder="0" 
+                          style={{ border: 0 }} 
+                          src={`https://maps.google.com/maps?q=${encodeURIComponent(estObj.address)}&t=&z=15&ie=UTF8&iwloc=&output=embed`} 
+                          allowFullScreen
+                        />
+                      </div>
+                    </div>
+                  );
+                })()
+              )}
 
               {/* Barbeiro */}
               <div className="form-group">

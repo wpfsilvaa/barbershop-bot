@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.sendPromoCampaign = exports.updatePromoConfig = exports.getPromoConfig = exports.updateEstablishmentClient = exports.listEstablishmentClients = void 0;
+exports.listEstablishmentFeedbacks = exports.sendPromoCampaign = exports.updatePromoConfig = exports.getPromoConfig = exports.updateEstablishmentClient = exports.listEstablishmentClients = void 0;
 const db_1 = __importDefault(require("../config/db"));
 const whatsappManager_1 = require("../services/whatsappManager");
 // 1. List clients of an establishment
@@ -144,3 +144,36 @@ const sendPromoCampaign = async (req, res) => {
     }
 };
 exports.sendPromoCampaign = sendPromoCampaign;
+// 6. List feedbacks for CRM dashboard
+const listEstablishmentFeedbacks = async (req, res) => {
+    const { establishmentId } = req.params;
+    const userId = req.user?.id;
+    const role = req.user?.role;
+    try {
+        let query = `
+      SELECT f.id, f.rating, f.comment, f.created_at,
+             c.name as client_name, c.phone as client_phone,
+             u.name as barber_name, u.id as barber_id,
+             s.name as service_name
+      FROM feedbacks f
+      JOIN clients c ON f.client_id = c.id
+      JOIN appointments a ON f.appointment_id = a.id
+      JOIN users u ON a.barber_id = u.id
+      JOIN services s ON a.service_id = s.id
+      WHERE f.establishment_id = $1
+    `;
+        const params = [establishmentId];
+        if (role === 'barber') {
+            query += ` AND a.barber_id = $2`;
+            params.push(userId);
+        }
+        query += ` ORDER BY f.created_at DESC`;
+        const result = await db_1.default.query(query, params);
+        return res.json(result.rows);
+    }
+    catch (error) {
+        console.error('[crmController] Error listing feedbacks:', error);
+        return res.status(500).json({ error: 'Internal server error.' });
+    }
+};
+exports.listEstablishmentFeedbacks = listEstablishmentFeedbacks;

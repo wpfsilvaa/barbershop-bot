@@ -110,7 +110,10 @@ export const getClientData = async (req: any, res: Response) => {
 
     // 3. Fetch all establishments (to allow booking)
     const estRes = await pool.query(
-      `SELECT id, name, logo_url, opening_time, closing_time FROM establishments ORDER BY name ASC`
+      `SELECT id, name, logo_url, address, opening_time, closing_time 
+       FROM establishments 
+       WHERE is_active = TRUE AND id != '00000000-0000-0000-0000-000000000000'::uuid 
+       ORDER BY name ASC`
     );
 
     return res.json({

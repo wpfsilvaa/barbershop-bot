@@ -166,3 +166,39 @@ export const sendPromoCampaign = async (req: AuthenticatedRequest, res: Response
     return res.status(500).json({ error: 'Internal server error.' });
   }
 };
+
+// 6. List feedbacks for CRM dashboard
+export const listEstablishmentFeedbacks = async (req: AuthenticatedRequest, res: Response) => {
+  const { establishmentId } = req.params;
+  const userId = req.user?.id;
+  const role = req.user?.role;
+
+  try {
+    let query = `
+      SELECT f.id, f.rating, f.comment, f.created_at,
+             c.name as client_name, c.phone as client_phone,
+             u.name as barber_name, u.id as barber_id,
+             s.name as service_name
+      FROM feedbacks f
+      JOIN clients c ON f.client_id = c.id
+      JOIN appointments a ON f.appointment_id = a.id
+      JOIN users u ON a.barber_id = u.id
+      JOIN services s ON a.service_id = s.id
+      WHERE f.establishment_id = $1
+    `;
+    const params: any[] = [establishmentId];
+
+    if (role === 'barber') {
+      query += ` AND a.barber_id = $2`;
+      params.push(userId);
+    }
+
+    query += ` ORDER BY f.created_at DESC`;
+
+    const result = await pool.query(query, params);
+    return res.json(result.rows);
+  } catch (error) {
+    console.error('[crmController] Error listing feedbacks:', error);
+    return res.status(500).json({ error: 'Internal server error.' });
+  }
+};
