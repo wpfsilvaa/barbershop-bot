@@ -32,12 +32,14 @@ import {
   CheckCircle,
   Megaphone,
   BookOpen,
-  Star
+  Star,
+  Copy,
+  Cpu
 } from 'lucide-react';
 
 interface FlowNode {
   id: string;
-  type: 'message' | 'condition' | 'action';
+  type: 'message' | 'condition' | 'action' | 'api';
   actionType?: string;
   title: string;
   x: number;
@@ -45,6 +47,11 @@ interface FlowNode {
   text?: string;
   options?: { key: string; label: string; target: string }[];
   target?: string;
+  method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
+  url?: string;
+  headers?: string;
+  body?: string;
+  webhookResponse?: string;
 }
 
 interface FlowEdge {
@@ -614,35 +621,45 @@ export const Dashboard: React.FC = () => {
 
   // Load current establishment settings into edit form
   useEffect(() => {
-    if (establishment) {
-      setShopName(establishment.name);
-      setBotActive(establishment.bot_active !== false);
-      setPrimaryColor(establishment.primary_color);
-      setSecondaryColor(establishment.secondary_color);
-      setBgColor(establishment.background_color);
-      setTextColor(establishment.text_color);
-      setOpenTime(establishment.opening_time);
-      setCloseTime(establishment.closing_time);
-      setSlotDuration(establishment.slot_duration_minutes);
-      setLogoUrl(establishment.logo_url || '');
-      setShopAddress(establishment.address || '');
-      setShopBio(establishment.bio || '');
-      setShopPhotos(establishment.photos || []);
-      
-      // Legacy messages
-      setMsgWelcome(establishment.msg_welcome || '');
-      setMsgSelectBarber(establishment.msg_select_barber || '');
-      setMsgSelectDate(establishment.msg_select_date || '');
-      setMsgSelectSlot(establishment.msg_select_slot || '');
-      setMsgConfirmed(establishment.msg_confirmed || '');
-      setMsgFallback(establishment.msg_fallback || '');
+    const loadEstSettings = async () => {
+      if (!user?.establishment_id) return;
+      try {
+        const est = await apiRequest(`/establishments/${user.establishment_id}`, 'GET');
+        if (est) {
+          setShopName(est.name);
+          setBotActive(est.bot_active !== false);
+          setPrimaryColor(est.primary_color);
+          setSecondaryColor(est.secondary_color);
+          setBgColor(est.background_color);
+          setTextColor(est.text_color);
+          setOpenTime(est.opening_time);
+          setCloseTime(est.closing_time);
+          setSlotDuration(est.slot_duration_minutes);
+          setLogoUrl(est.logo_url || '');
+          setShopAddress(est.address || '');
+          setShopBio(est.bio || '');
+          setShopPhotos(est.photos || []);
+          
+          setMsgWelcome(est.msg_welcome || '');
+          setMsgSelectBarber(est.msg_select_barber || '');
+          setMsgSelectDate(est.msg_select_date || '');
+          setMsgSelectSlot(est.msg_select_slot || '');
+          setMsgConfirmed(est.msg_confirmed || '');
+          setMsgFallback(est.msg_fallback || '');
 
-      // Load Graphical branching flow configuration
-      if (establishment.bot_flow) {
-        setBotFlow(establishment.bot_flow);
+          if (est.bot_flow) {
+            setBotFlow(est.bot_flow);
+          }
+          
+          updateThemeColors(est);
+        }
+      } catch (err) {
+        console.error('Failed to load active establishment settings:', err);
       }
-    }
-  }, [establishment]);
+    };
+
+    loadEstSettings();
+  }, [user?.establishment_id]);
 
   // Load slots for manual creation modal
   useEffect(() => {
@@ -1771,17 +1788,62 @@ export const Dashboard: React.FC = () => {
     return `M ${x1} ${y1} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${x2} ${y2}`;
   };
 
-  // Add a new message node to flowchart
-  const handleAddNewMessageNode = () => {
-    const newNodeId = `node_msg_${Date.now()}`;
-    const newNode: FlowNode = {
-      id: newNodeId,
-      type: 'message',
-      title: 'Nova Mensagem',
-      x: 100,
-      y: 300,
-      text: 'Olá! Esta é uma nova mensagem.'
-    };
+  // Add a new node (supports click creation and drag-and-drop creation)
+  const handleAddNewNode = (type: 'message' | 'condition' | 'api', clientX?: number, clientY?: number) => {
+    const newNodeId = `node_${type === 'message' ? 'msg' : type === 'condition' ? 'cond' : 'api'}_${Date.now()}`;
+    let x = 100;
+    let y = 300;
+
+    if (clientX !== undefined && clientY !== undefined && canvasRef.current) {
+      const rect = canvasRef.current.getBoundingClientRect();
+      x = clientX - rect.left + canvasRef.current.scrollLeft - 120; // center horizontal (240px card width)
+      y = clientY - rect.top + canvasRef.current.scrollTop - 40;   // center vertical
+      
+      // Clamp coordinates to scrollable area boundaries
+      x = Math.max(20, Math.min(2900, x));
+      y = Math.max(20, Math.min(700, y));
+    } else {
+      // If client coordinates are not provided, position near start coordinates with a small random shift
+      x = 100 + Math.floor(Math.random() * 80);
+      y = 300 + Math.floor(Math.random() * 80);
+    }
+
+    let newNode: FlowNode;
+    if (type === 'message') {
+      newNode = {
+        id: newNodeId,
+        type: 'message',
+        title: 'Nova Mensagem',
+        x,
+        y,
+        text: 'Olá! Esta é uma nova mensagem.'
+      };
+    } else if (type === 'condition') {
+      newNode = {
+        id: newNodeId,
+        type: 'condition',
+        title: 'Nova Verificação',
+        x,
+        y,
+        options: [
+          { key: '1', label: 'Opção A', target: '' },
+          { key: '2', label: 'Opção B', target: '' }
+        ]
+      };
+    } else {
+      newNode = {
+        id: newNodeId,
+        type: 'api',
+        title: 'Integração API',
+        x,
+        y,
+        method: 'POST',
+        url: 'https://api.exemplo.com/webhook',
+        headers: '{\n  "Authorization": "Bearer token"\n}',
+        body: '{\n  "cliente": "{cliente}",\n  "telefone": "{cliente}",\n  "barbeiro": "{barbeiro}",\n  "data": "{data}",\n  "horario": "{horario}"\n}',
+        webhookResponse: 'API integrada com sucesso! 🚀'
+      };
+    }
 
     const updatedFlow = {
       ...botFlow,
@@ -1790,32 +1852,48 @@ export const Dashboard: React.FC = () => {
     
     setBotFlow(updatedFlow);
     setSelectedNodeId(newNodeId);
-    showToast('Novo nó de mensagem criado! Personalize-o abaixo.');
+    showToast(`Novo nó de ${type === 'message' ? 'mensagem' : type === 'condition' ? 'verificação' : 'integração API'} criado!`);
   };
 
-  // Add a new condition verification node to flowchart
-  const handleAddNewConditionNode = () => {
-    const newNodeId = `node_cond_${Date.now()}`;
-    const newNode: FlowNode = {
+  // Legacy wrappers for back compatibility if needed, though they just delegate
+  const handleAddNewMessageNode = () => handleAddNewNode('message');
+  const handleAddNewConditionNode = () => handleAddNewNode('condition');
+
+  // Duplicate a flowchart node with coordinates shifted slightly
+  const handleDuplicateNode = (node: FlowNode) => {
+    const reservedIds = ['start', 'end', 'welcome', 'check_intent', 'select_barber', 'select_date', 'select_slot', 'confirmed', 'offer_plan'];
+    if (reservedIds.includes(node.id) || node.type === 'start' || node.type === 'end' || node.type === 'action') {
+      showToast('Nós do sistema ou de ação automática não podem ser duplicados.', 'error');
+      return;
+    }
+
+    const newNodeId = `node_${node.type === 'message' ? 'msg' : 'cond'}_${Date.now()}`;
+    const duplicatedNode: FlowNode = node.type === 'message' ? {
+      ...node,
       id: newNodeId,
-      type: 'condition',
-      title: 'Nova Verificação',
-      x: 100,
-      y: 350,
-      options: [
-        { key: '1', label: 'Opção A', target: '' },
-        { key: '2', label: 'Opção B', target: '' }
-      ]
+      title: `${node.title} (Cópia)`,
+      x: Math.min(2900, node.x + 40),
+      y: Math.min(700, node.y + 40)
+    } : {
+      ...node,
+      id: newNodeId,
+      title: `${node.title} (Cópia)`,
+      x: Math.min(2900, node.x + 40),
+      y: Math.min(700, node.y + 40),
+      options: (node.options || []).map(opt => ({
+        ...opt,
+        target: '' // clear targets to avoid copy link cycles
+      }))
     };
 
     const updatedFlow = {
       ...botFlow,
-      nodes: [...botFlow.nodes, newNode]
+      nodes: [...botFlow.nodes, duplicatedNode]
     };
-    
+
     setBotFlow(updatedFlow);
     setSelectedNodeId(newNodeId);
-    showToast('Novo nó de verificação condicional criado! Adicione caminhos abaixo.');
+    showToast('Nó duplicado com sucesso!');
   };
 
   // Restore Default Flowchart Preset
@@ -2824,18 +2902,142 @@ export const Dashboard: React.FC = () => {
                     <RefreshCw size={16} />
                     <span>Restaurar Padrão</span>
                   </button>
-                  <button className="btn-secondary" style={{ gap: '6px' }} onClick={handleAddNewMessageNode}>
-                    <Plus size={16} />
-                    <span>Criar Mensagem</span>
-                  </button>
-                  <button className="btn-secondary" style={{ gap: '6px' }} onClick={handleAddNewConditionNode}>
-                    <Plus size={16} />
-                    <span>Criar Verificação</span>
-                  </button>
                   <button className="btn-primary" style={{ gap: '6px' }} onClick={() => handleSaveBotFlowchart(botFlow)}>
                     <Check size={16} />
                     <span>Salvar Fluxograma</span>
                   </button>
+                </div>
+              </div>
+
+              {/* Component Palette (Physical Elements to Drag or Click) */}
+              <div 
+                style={{ 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  gap: '16px', 
+                  background: 'rgba(25, 25, 28, 0.6)', 
+                  border: '1px solid rgba(255, 255, 255, 0.05)', 
+                  borderRadius: '12px', 
+                  padding: '12px 18px', 
+                  marginBottom: '16px',
+                  backdropFilter: 'blur(10px)'
+                }}
+              >
+                <div style={{ marginRight: '8px' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 'bold', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block' }}>
+                    Componentes
+                  </span>
+                  <span style={{ fontSize: '11px', color: 'rgba(255, 255, 255, 0.4)' }}>
+                    Clique ou arraste para o canvas
+                  </span>
+                </div>
+
+                {/* Component 1: Message Node */}
+                <div
+                  draggable
+                  onDragStart={(e) => e.dataTransfer.setData('nodeType', 'message')}
+                  onClick={() => handleAddNewNode('message')}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '10px',
+                    padding: '8px 16px',
+                    borderRadius: '8px',
+                    border: '1px dashed rgba(212,175,55,0.4)',
+                    background: 'rgba(212,175,55,0.03)',
+                    color: 'var(--foreground)',
+                    cursor: 'grab',
+                    fontSize: '13px',
+                    fontWeight: 500,
+                    userSelect: 'none',
+                    transition: 'transform 0.2s, background 0.2s, box-shadow 0.2s'
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.transform = 'scale(1.03)';
+                    e.currentTarget.style.background = 'rgba(212,175,55,0.08)';
+                    e.currentTarget.style.boxShadow = '0 0 10px rgba(212,175,55,0.1)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.transform = 'scale(1.0)';
+                    e.currentTarget.style.background = 'rgba(212,175,55,0.03)';
+                    e.currentTarget.style.boxShadow = 'none';
+                  }}
+                  title="Clique ou arraste para criar um balão de mensagem"
+                >
+                  <MessageSquare size={16} style={{ color: 'var(--primary)' }} />
+                  <span>Mensagem de Texto</span>
+                </div>
+
+                {/* Component 2: Condition Node */}
+                <div
+                  draggable
+                  onDragStart={(e) => e.dataTransfer.setData('nodeType', 'condition')}
+                  onClick={() => handleAddNewNode('condition')}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '10px',
+                    padding: '8px 16px',
+                    borderRadius: '8px',
+                    border: '1px dashed rgba(96,165,250,0.4)',
+                    background: 'rgba(96,165,250,0.03)',
+                    color: 'var(--foreground)',
+                    cursor: 'grab',
+                    fontSize: '13px',
+                    fontWeight: 500,
+                    userSelect: 'none',
+                    transition: 'transform 0.2s, background 0.2s, box-shadow 0.2s'
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.transform = 'scale(1.03)';
+                    e.currentTarget.style.background = 'rgba(96,165,250,0.08)';
+                    e.currentTarget.style.boxShadow = '0 0 10px rgba(96,165,250,0.1)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.transform = 'scale(1.0)';
+                    e.currentTarget.style.background = 'rgba(96,165,250,0.03)';
+                    e.currentTarget.style.boxShadow = 'none';
+                  }}
+                  title="Clique ou arraste para criar uma tomada de decisão/menu condicional"
+                >
+                  <Workflow size={16} style={{ color: '#60a5fa' }} />
+                  <span>Verificação Condicional</span>
+                </div>
+
+                {/* Component 3: API Webhook Node */}
+                <div
+                  draggable
+                  onDragStart={(e) => e.dataTransfer.setData('nodeType', 'api')}
+                  onClick={() => handleAddNewNode('api')}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '10px',
+                    padding: '8px 16px',
+                    borderRadius: '8px',
+                    border: '1px dashed rgba(168,85,247,0.4)',
+                    background: 'rgba(168,85,247,0.03)',
+                    color: 'var(--foreground)',
+                    cursor: 'grab',
+                    fontSize: '13px',
+                    fontWeight: 500,
+                    userSelect: 'none',
+                    transition: 'transform 0.2s, background 0.2s, box-shadow 0.2s'
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.transform = 'scale(1.03)';
+                    e.currentTarget.style.background = 'rgba(168,85,247,0.08)';
+                    e.currentTarget.style.boxShadow = '0 0 10px rgba(168,85,247,0.1)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.transform = 'scale(1.0)';
+                    e.currentTarget.style.background = 'rgba(168,85,247,0.03)';
+                    e.currentTarget.style.boxShadow = 'none';
+                  }}
+                  title="Clique ou arraste para criar uma integração de API Webhook externa"
+                >
+                  <Cpu size={16} style={{ color: '#a855f7' }} />
+                  <span>Integração API</span>
                 </div>
               </div>
 
@@ -2856,6 +3058,14 @@ export const Dashboard: React.FC = () => {
                 onMouseMove={handleCanvasMouseMove}
                 onMouseUp={handleCanvasMouseUp}
                 onMouseLeave={handleCanvasMouseUp}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const type = e.dataTransfer.getData('nodeType') as 'message' | 'condition';
+                  if (type) {
+                    handleAddNewNode(type, e.clientX, e.clientY);
+                  }
+                }}
               >
                 {/* Scrollable canvas area */}
                 <div style={{ width: '3200px', height: '800px', position: 'relative', backgroundImage: 'radial-gradient(rgba(212, 175, 55, 0.08) 1.5px, transparent 1.5px)', backgroundSize: '24px 24px' }}>
@@ -3005,6 +3215,10 @@ export const Dashboard: React.FC = () => {
                       cardBorder = isSelected ? '2px solid #ef4444' : '1px solid rgba(239,68,68,0.4)';
                       cardBg = isSelected ? 'rgba(239,68,68,0.1)' : 'rgba(239,68,68,0.03)';
                       cardShadow = isSelected ? '0 0 20px rgba(239,68,68,0.25)' : '0 4px 12px rgba(0,0,0,0.2)';
+                    } else if (node.type === 'api') {
+                      cardBorder = isSelected ? '2px solid #a855f7' : '1px solid rgba(168,85,247,0.4)';
+                      cardBg = isSelected ? 'rgba(168,85,247,0.1)' : 'rgba(168,85,247,0.03)';
+                      cardShadow = isSelected ? '0 0 20px rgba(168,85,247,0.25)' : '0 4px 12px rgba(0,0,0,0.2)';
                     }
 
                     // Dynamic height based on options count
@@ -3039,6 +3253,7 @@ export const Dashboard: React.FC = () => {
                              node.type === 'end' ? <div style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#ef4444' }} /> : 
                              node.type === 'message' ? <MessageSquare size={14} style={{ color: 'var(--primary)' }} /> : 
                              node.type === 'condition' ? <Workflow size={14} style={{ color: '#60a5fa' }} /> : 
+                             node.type === 'api' ? <Cpu size={14} style={{ color: '#a855f7' }} /> : 
                              <Award size={14} style={{ color: 'var(--success)' }} />}
                             <strong style={{ fontSize: '13px', color: 'var(--foreground)' }}>{node.title}</strong>
                           </div>
@@ -3074,12 +3289,22 @@ export const Dashboard: React.FC = () => {
                               </button>
                             )}
                             {!isSystemReserved && (
-                              <button 
-                                style={{ background: 'none', border: 'none', color: 'var(--error)', cursor: 'pointer', padding: '2px' }}
-                                onClick={(e) => { e.stopPropagation(); handleDeleteNode(node.id); }}
-                              >
-                                <X size={12} />
-                              </button>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                <button 
+                                  style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', padding: '2px', display: 'flex', alignItems: 'center' }}
+                                  title="Duplicar Nó"
+                                  onClick={(e) => { e.stopPropagation(); handleDuplicateNode(node); }}
+                                >
+                                  <Copy size={12} />
+                                </button>
+                                <button 
+                                  style={{ background: 'none', border: 'none', color: 'var(--error)', cursor: 'pointer', padding: '2px', display: 'flex', alignItems: 'center' }}
+                                  title="Excluir Nó"
+                                  onClick={(e) => { e.stopPropagation(); handleDeleteNode(node.id); }}
+                                >
+                                  <Trash2 size={12} />
+                                </button>
+                              </div>
                             )}
                           </div>
                         </div>
@@ -3127,6 +3352,7 @@ export const Dashboard: React.FC = () => {
                             {node.type === 'start' ? 'Início da Conversa' :
                              node.type === 'end' ? 'Fim da Conversa' :
                              node.type === 'message' ? node.text : 
+                             node.type === 'api' ? `${node.method || 'POST'}: ${node.url || ''}` :
                              `Ação: ${node.actionType}`}
                           </p>
                         )}
@@ -3400,6 +3626,142 @@ export const Dashboard: React.FC = () => {
                             <option key={n.id} value={n.id}>{n.title} ({n.type})</option>
                           ))}
                         </select>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* NODE TYPE 4: API WEBHOOK NODE EDITOR */}
+                  {selectedNode.type === 'api' && (
+                    <div style={{ display: 'flex', gap: '20px', flexDirection: 'row' }}>
+                      <div style={{ flex: 2, display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                        <div className="form-group">
+                          <label className="form-label">Título do Nó</label>
+                          <input 
+                            type="text" 
+                            className="form-input" 
+                            value={selectedNode.title} 
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setBotFlow(prev => ({
+                                ...prev,
+                                nodes: prev.nodes.map(n => n.id === selectedNode.id ? { ...n, title: val } : n)
+                              }));
+                            }} 
+                          />
+                        </div>
+
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '12px' }}>
+                          <div className="form-group">
+                            <label className="form-label">Método HTTP</label>
+                            <select
+                              className="form-input"
+                              value={selectedNode.method || 'POST'}
+                              onChange={(e) => {
+                                const val = e.target.value as any;
+                                setBotFlow(prev => ({
+                                  ...prev,
+                                  nodes: prev.nodes.map(n => n.id === selectedNode.id ? { ...n, method: val } : n)
+                                }));
+                              }}
+                            >
+                              <option value="GET">GET</option>
+                              <option value="POST">POST</option>
+                              <option value="PUT">PUT</option>
+                              <option value="DELETE">DELETE</option>
+                            </select>
+                          </div>
+
+                          <div className="form-group">
+                            <label className="form-label">URL da API (Endpoint Webhook)</label>
+                            <input
+                              type="text"
+                              className="form-input"
+                              placeholder="https://api.seusistema.com/webhooks/reserva"
+                              value={selectedNode.url || ''}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setBotFlow(prev => ({
+                                  ...prev,
+                                  nodes: prev.nodes.map(n => n.id === selectedNode.id ? { ...n, url: val } : n)
+                                }));
+                              }}
+                            />
+                          </div>
+                        </div>
+
+                        <div className="form-group">
+                          <label className="form-label">Headers da Requisição (JSON)</label>
+                          <textarea
+                            className="form-input"
+                            style={{ minHeight: '60px', fontFamily: 'monospace', fontSize: '12px' }}
+                            placeholder='{ "Authorization": "Bearer token-secreto" }'
+                            value={selectedNode.headers || ''}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setBotFlow(prev => ({
+                                ...prev,
+                                nodes: prev.nodes.map(n => n.id === selectedNode.id ? { ...n, headers: val } : n)
+                                }));
+                            }}
+                          />
+                        </div>
+
+                        {selectedNode.method !== 'GET' && (
+                          <div className="form-group">
+                            <label className="form-label">Corpo da Requisição (JSON Payload)</label>
+                            <textarea
+                              className="form-input"
+                              style={{ minHeight: '90px', fontFamily: 'monospace', fontSize: '12px' }}
+                              placeholder='{ "cliente": "{cliente}", "telefone": "{cliente}" }'
+                              value={selectedNode.body || ''}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setBotFlow(prev => ({
+                                  ...prev,
+                                  nodes: prev.nodes.map(n => n.id === selectedNode.id ? { ...n, body: val } : n)
+                                }));
+                              }}
+                            />
+                          </div>
+                        )}
+
+                        <div className="form-group">
+                          <label className="form-label">Mensagem de Resposta ao Cliente (WhatsApp)</label>
+                          <textarea
+                            className="form-input"
+                            style={{ minHeight: '60px', fontFamily: 'monospace', fontSize: '13px' }}
+                            placeholder="Resposta opcional pós-chamada com sucesso..."
+                            value={selectedNode.webhookResponse || ''}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setBotFlow(prev => ({
+                                ...prev,
+                                nodes: prev.nodes.map(n => n.id === selectedNode.id ? { ...n, webhookResponse: val } : n)
+                              }));
+                            }}
+                          />
+                        </div>
+
+                        <div className="form-group">
+                          <label className="form-label">Próximo Passo pós-Integração</label>
+                          <select 
+                            className="form-input"
+                            value={botFlow.edges.find(e => e.source === selectedNode.id)?.target || ''}
+                            onChange={(e) => handleUpdateNodeTargetConnection(selectedNode.id, e.target.value)}
+                          >
+                            <option value="">Nenhum (Fim do fluxo)</option>
+                            {botFlow.nodes.filter(n => n.id !== selectedNode.id).map(n => (
+                              <option key={n.id} value={n.id}>{n.title} ({n.type === 'action' ? `Ação: ${n.actionType}` : n.type})</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+
+                      <div style={{ flex: 1, padding: '14px', background: 'rgba(255,255,255,0.02)', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.04)', fontSize: '12px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        <strong style={{ display: 'block', color: 'var(--primary)' }}>Como integrar Webhooks:</strong>
+                        <p>💡 Utilize tags dinâmicas como `{`{cliente}`}` e `{`{barbeiro}`}` no URL ou Body para passar as respostas do agendamento.</p>
+                        <p>🔒 Headers e Body devem ser strings formatadas como JSON válido.</p>
+                        <p>⚡ A chamada é disparada de forma automatizada pelo servidor central do BarberHub assim que a conversa atinge essa etapa.</p>
                       </div>
                     </div>
                   )}

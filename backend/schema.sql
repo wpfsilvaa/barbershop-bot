@@ -47,31 +47,31 @@ CREATE TABLE establishments (
     -- Graphical branching chatbot flow graph JSONB configuration (including Start/End nodes)
     bot_flow JSONB DEFAULT '{
       "nodes": [
-        { "id": "start", "type": "start", "title": "Início", "x": 40, "y": 200 },
-        { "id": "welcome", "type": "message", "title": "Boas-Vindas", "x": 240, "y": 200, "text": "Olá! Seja bem-vindo à Barbearia." },
-        { "id": "check_intent", "type": "condition", "title": "Verificar Opção", "x": 540, "y": 200, "options": [
+        { "id": "start", "type": "start", "title": "Início", "x": 50, "y": 250 },
+        { "id": "welcome", "type": "message", "title": "Boas-Vindas", "x": 350, "y": 250, "text": "Olá! Seja bem-vindo à Barbearia." },
+        { "id": "check_intent", "type": "condition", "title": "Verificar Opção", "x": 690, "y": 250, "options": [
           { "key": "1", "label": "Agendar", "target": "select_barber" },
           { "key": "2", "label": "Contato", "target": "other_help" }
         ]},
-        { "id": "other_help", "type": "message", "title": "Informações", "x": 840, "y": 380, "text": "💈 Nossos horários de atendimento são das {abertura} às {fechamento}.\\n📞 Se precisar falar com um atendente, nos ligue no (11) 99999-8888. Obrigado! 👍" },
-        { "id": "select_barber", "type": "action", "actionType": "select_barber", "title": "1. Escolher Barbeiro", "x": 840, "y": 60, "target": "select_date" },
-        { "id": "select_date", "type": "action", "actionType": "select_date", "title": "2. Escolher Data", "x": 1120, "y": 60, "target": "select_slot" },
-        { "id": "select_slot", "type": "action", "actionType": "select_slot", "title": "3. Escolher Horário", "x": 1400, "y": 200, "target": "confirmed" },
-        { "id": "confirmed", "type": "message", "title": "Confirmação", "x": 1680, "y": 200, "text": "✅ *Agendamento Confirmado!*\\n\\n*Profissional:* {barbeiro}\\n*Horário:* {horario}\\n*Data:* {data}\\n\\nSeu agendamento foi registrado com sucesso! 💈", "target": "offer_plan" },
-        { "id": "offer_plan", "type": "action", "actionType": "offer_plan", "title": "4. Clube Assinatura", "x": 1960, "y": 200, "target": "end" },
-        { "id": "end", "type": "end", "title": "Fim", "x": 2260, "y": 200 }
+        { "id": "select_barber", "type": "action", "actionType": "select_barber", "title": "1. Escolher Barbeiro", "x": 1050, "y": 80, "target": "select_date" },
+        { "id": "select_date", "type": "action", "actionType": "select_date", "title": "2. Escolher Data", "x": 1410, "y": 80, "target": "select_slot" },
+        { "id": "select_slot", "type": "action", "actionType": "select_slot", "title": "3. Escolher Horário", "x": 1770, "y": 250, "target": "confirmed" },
+        { "id": "confirmed", "type": "message", "title": "Confirmação", "x": 2130, "y": 250, "text": "✅ *Agendamento Confirmado!*\\n\\n*Profissional:* {barbeiro}\\n*Horário:* {horario}\\n*Data:* {data}\\n\\nSeu agendamento foi registrado com sucesso! 💈", "target": "offer_plan" },
+        { "id": "offer_plan", "type": "action", "actionType": "offer_plan", "title": "4. Clube Assinatura", "x": 2490, "y": 250, "target": "end" },
+        { "id": "end", "type": "end", "title": "Fim", "x": 2850, "y": 250 },
+        { "id": "other_help", "type": "message", "title": "Informações", "x": 1050, "y": 420, "text": "💈 Nossos horários de atendimento são das {abertura} às {fechamento}.\\n📞 Se precisar falar com um atendente, nos ligue no (11) 99999-8888. Obrigado! 👍", "target": "end" }
       ],
       "edges": [
-        { "id": "e_start", "source": "start", "target": "welcome" },
-        { "id": "e1", "source": "welcome", "target": "check_intent" },
-        { "id": "e2", "source": "check_intent", "sourceHandle": "1", "target": "select_barber" },
-        { "id": "e3", "source": "check_intent", "sourceHandle": "2", "target": "other_help" },
-        { "id": "e_other_end", "source": "other_help", "target": "end" },
-        { "id": "e4", "source": "select_barber", "target": "select_date" },
-        { "id": "e5", "source": "select_date", "target": "select_slot" },
-        { "id": "e6", "source": "select_slot", "target": "confirmed" },
-        { "id": "e7", "source": "confirmed", "target": "offer_plan" },
-        { "id": "e_plan_end", "source": "offer_plan", "target": "end" }
+        { "id": "e_start_welcome", "source": "start", "target": "welcome" },
+        { "id": "e_welcome_check_intent", "source": "welcome", "target": "check_intent" },
+        { "id": "e_check_intent_1_select_barber", "source": "check_intent", "sourceHandle": "1", "target": "select_barber" },
+        { "id": "e_check_intent_2_other_help", "source": "check_intent", "sourceHandle": "2", "target": "other_help" },
+        { "id": "e_select_barber_select_date", "source": "select_barber", "target": "select_date" },
+        { "id": "e_select_date_select_slot", "source": "select_date", "target": "select_slot" },
+        { "id": "e_select_slot_confirmed", "source": "select_slot", "target": "confirmed" },
+        { "id": "e_confirmed_offer_plan", "source": "confirmed", "target": "offer_plan" },
+        { "id": "e_offer_plan_end", "source": "offer_plan", "target": "end" },
+        { "id": "e_other_help_end", "source": "other_help", "target": "end" }
       ]
     }'::jsonb
 );

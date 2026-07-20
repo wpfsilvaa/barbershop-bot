@@ -1168,6 +1168,62 @@ async function executeTenantBotFlowLogic(establishmentId, sock, msg, phone) {
                     session.state = 'IDLE';
                     return;
                 }
+                if (node.type === 'api') {
+                    const method = node.method || 'POST';
+                    const urlTemplate = node.url || '';
+                    const headersTemplate = node.headers || '{}';
+                    const bodyTemplate = node.body || '{}';
+                    const responseTemplate = node.webhookResponse || '';
+                    const vars = {
+                        cliente: pushName,
+                        estabelecimento: session.establishmentName,
+                        abertura: session.establishmentOpening,
+                        fechamento: session.establishmentClosing,
+                        barbeiro: session.selectedBarberName || '',
+                        horario: session.selectedSlotISO ? formatTime(session.selectedSlotISO) : '',
+                        data: session.selectedDateLabel || ''
+                    };
+                    const resolvedUrl = replacePlaceholders(urlTemplate, vars);
+                    const resolvedHeadersStr = replacePlaceholders(headersTemplate, vars);
+                    const resolvedBodyStr = replacePlaceholders(bodyTemplate, vars);
+                    console.log(`[WebhookNode] Executing ${method} call to ${resolvedUrl}...`);
+                    try {
+                        let headers = {};
+                        try {
+                            headers = JSON.parse(resolvedHeadersStr);
+                        }
+                        catch (e) {
+                            console.warn('[WebhookNode] Failed to parse headers JSON, using empty headers:', e);
+                        }
+                        let requestOptions = {
+                            method,
+                            headers: {
+                                'Content-Type': 'application/json',
+                                ...headers
+                            }
+                        };
+                        if (method !== 'GET' && method !== 'HEAD') {
+                            requestOptions.body = resolvedBodyStr;
+                        }
+                        const response = await fetch(resolvedUrl, requestOptions);
+                        console.log(`[WebhookNode] API response status: ${response.status}`);
+                        if (responseTemplate) {
+                            const resolvedResponseText = replacePlaceholders(responseTemplate, vars);
+                            await sendTextMessage(sock, phone, resolvedResponseText);
+                        }
+                    }
+                    catch (apiErr) {
+                        console.error('[WebhookNode] API call failed:', apiErr);
+                    }
+                    const edge = edges.find(e => e.source === node.id);
+                    if (edge) {
+                        session.currentNodeId = edge.target;
+                        session.waitingForInput = false;
+                        continue;
+                    }
+                    session.state = 'IDLE';
+                    return;
+                }
                 if (node.type === 'condition') {
                     // Condition nodes are not rendered themselves; they evaluate input from parent.
                     // If we landed here without waitingForInput, it means the flow is misconfigured. Jump to welcome.
