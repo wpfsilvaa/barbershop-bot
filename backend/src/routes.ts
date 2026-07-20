@@ -28,7 +28,8 @@ import {
   getPromoConfig, 
   updatePromoConfig, 
   sendPromoCampaign,
-  listEstablishmentFeedbacks
+  listEstablishmentFeedbacks,
+  createEstablishmentClient
 } from './controllers/crmController';
 import { verifyToken, requireRole, checkEstablishmentAccess, AuthenticatedRequest } from './middleware/auth';
 import { authRateLimiter, apiRateLimiter } from './middleware/security';
@@ -51,7 +52,8 @@ import {
   getGlobalMetrics,
   updateEstablishmentCommission,
   updateEstablishmentStatus,
-  updateEstablishmentLicense
+  updateEstablishmentLicense,
+  deleteEstablishment
 } from './controllers/adminController';
 
 import {
@@ -258,6 +260,13 @@ router.get(
   checkEstablishmentAccess,
   requireRole(['owner', 'admin', 'barber']),
   listEstablishmentClients
+);
+router.post(
+  '/establishments/:establishmentId/clients',
+  verifyToken,
+  checkEstablishmentAccess,
+  requireRole(['owner', 'admin', 'barber']),
+  createEstablishmentClient
 );
 router.put(
   '/establishments/:establishmentId/clients/:clientId',
@@ -568,6 +577,7 @@ router.post('/admin/whatsapp-sessions/:establishmentId/logout', verifyToken, req
 router.put('/admin/establishments/:establishmentId/commission', verifyToken, requireRole(['admin']), updateEstablishmentCommission);
 router.put('/admin/establishments/:establishmentId/status', verifyToken, requireRole(['admin']), updateEstablishmentStatus);
 router.put('/admin/establishments/:establishmentId/license', verifyToken, requireRole(['admin']), updateEstablishmentLicense);
+router.delete('/admin/establishments/:establishmentId', verifyToken, requireRole(['admin']), deleteEstablishment);
 
 // Establishment Metrics (Owner, Admin or Barber)
 router.get('/establishments/:establishmentId/metrics', verifyToken, checkEstablishmentAccess, getEstablishmentMetrics);

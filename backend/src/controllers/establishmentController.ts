@@ -11,7 +11,7 @@ export const getEstablishment = async (req: AuthenticatedRequest, res: Response)
       `SELECT id, name, slug, primary_color, secondary_color, background_color, text_color, 
               opening_time, closing_time, slot_duration_minutes, 
               msg_welcome, msg_select_barber, msg_select_date, msg_select_slot, msg_confirmed, msg_fallback,
-              bot_flow, logo_url, address, bio, photos,
+              bot_flow, logo_url, address, bio, photos, bot_active,
               created_at 
        FROM establishments 
        WHERE id = $1`,
@@ -38,7 +38,7 @@ export const getEstablishmentBySlug = async (req: Request, res: Response) => {
       `SELECT id, name, slug, primary_color, secondary_color, background_color, text_color, 
               opening_time, closing_time, slot_duration_minutes, 
               msg_welcome, msg_select_barber, msg_select_date, msg_select_slot, msg_confirmed, msg_fallback,
-              bot_flow, logo_url, address, bio, photos, is_active
+              bot_flow, logo_url, address, bio, photos, is_active, bot_active
        FROM establishments 
        WHERE slug = $1`,
       [slug]
@@ -77,7 +77,8 @@ export const updateEstablishment = async (req: AuthenticatedRequest, res: Respon
     logo_url,
     address,
     bio,
-    photos
+    photos,
+    bot_active
   } = req.body;
 
   try {
@@ -101,11 +102,12 @@ export const updateEstablishment = async (req: AuthenticatedRequest, res: Respon
            logo_url = $16,
            address = $17,
            bio = $18,
-           photos = $19
-       WHERE id = $20
+           photos = $19,
+           bot_active = COALESCE($20, bot_active)
+       WHERE id = $21
        RETURNING id, name, slug, primary_color, secondary_color, background_color, text_color, 
                  opening_time, closing_time, slot_duration_minutes,
-                 msg_welcome, msg_select_barber, msg_select_date, msg_select_slot, msg_confirmed, msg_fallback, bot_flow, logo_url, address, bio, photos`,
+                 msg_welcome, msg_select_barber, msg_select_date, msg_select_slot, msg_confirmed, msg_fallback, bot_flow, logo_url, address, bio, photos, bot_active`,
       [
         name, 
         primary_color, 
@@ -126,6 +128,7 @@ export const updateEstablishment = async (req: AuthenticatedRequest, res: Respon
         address,
         bio,
         photos || [],
+        bot_active === undefined ? null : bot_active,
         establishmentId
       ]
     );

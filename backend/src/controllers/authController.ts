@@ -177,11 +177,41 @@ export const registerOwner = async (req: AuthenticatedRequest, res: Response) =>
       return res.status(400).json({ error: 'Establishment URL slug already in use.' });
     }
 
-    // Insert new establishment with default colors
+    // Insert new establishment with default colors and standard chatbot flow preset
+    const defaultBotFlow = {
+      nodes: [
+        { id: 'start', type: 'start', title: 'Início', x: 50, y: 250 },
+        { id: 'welcome', type: 'message', title: 'Boas-Vindas', x: 350, y: 250, text: 'Olá! Seja bem-vindo à Barbearia.' },
+        { id: 'check_intent', type: 'condition', title: 'Verificar Opção', x: 690, y: 250, options: [
+          { key: '1', label: 'Agendar', target: 'select_barber' },
+          { key: '2', label: 'Contato', target: 'other_help' }
+        ]},
+        { id: 'select_barber', type: 'action', actionType: 'select_barber', title: '1. Escolher Barbeiro', x: 1050, y: 80, target: 'select_date' },
+        { id: 'select_date', type: 'action', actionType: 'select_date', title: '2. Escolher Data', x: 1410, y: 80, target: 'select_slot' },
+        { id: 'select_slot', type: 'action', actionType: 'select_slot', title: '3. Escolher Horário', x: 1770, y: 250, target: 'confirmed' },
+        { id: 'confirmed', type: 'message', title: 'Confirmação', x: 2130, y: 250, text: '✅ *Agendamento Confirmado!*\n\n*Profissional:* {barbeiro}\n*Horário:* {horario}\n*Data:* {data}\n\nSeu agendamento foi registrado com sucesso! 💈', target: 'offer_plan' },
+        { id: 'offer_plan', type: 'action', actionType: 'offer_plan', title: '4. Clube Assinatura', x: 2490, y: 250, target: 'end' },
+        { id: 'end', type: 'end', title: 'Fim', x: 2850, y: 250 },
+        { id: 'other_help', type: 'message', title: 'Informações', x: 1050, y: 420, text: '💈 Nossos horários de atendimento são das {abertura} às {fechamento}.\n📞 Se precisar falar com um atendente, nos ligue no (11) 99999-8888. Obrigado! 👍', target: 'end' }
+      ],
+      edges: [
+        { id: 'e_start_welcome', source: 'start', target: 'welcome' },
+        { id: 'e_welcome_check_intent', source: 'welcome', target: 'check_intent' },
+        { id: 'e_check_intent_1_select_barber', source: 'check_intent', sourceHandle: '1', target: 'select_barber' },
+        { id: 'e_check_intent_2_other_help', source: 'check_intent', sourceHandle: '2', target: 'other_help' },
+        { id: 'e_select_barber_select_date', source: 'select_barber', target: 'select_date' },
+        { id: 'e_select_date_select_slot', source: 'select_date', target: 'select_slot' },
+        { id: 'e_select_slot_confirmed', source: 'select_slot', target: 'confirmed' },
+        { id: 'e_confirmed_offer_plan', source: 'confirmed', target: 'offer_plan' },
+        { id: 'e_offer_plan_end', source: 'offer_plan', target: 'end' },
+        { id: 'e_other_help_end', source: 'other_help', target: 'end' }
+      ]
+    };
+
     const estResult = await client.query(
-      `INSERT INTO establishments (name, slug, primary_color, secondary_color, background_color, text_color) 
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-      [establishment_name, establishment_slug, '#e2a857', '#1e1e24', '#0f0f11', '#f3f4f6']
+      `INSERT INTO establishments (name, slug, primary_color, secondary_color, background_color, text_color, bot_flow) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+      [establishment_name, establishment_slug, '#e2a857', '#1e1e24', '#0f0f11', '#f3f4f6', JSON.stringify(defaultBotFlow)]
     );
     const establishmentId = estResult.rows[0].id;
 

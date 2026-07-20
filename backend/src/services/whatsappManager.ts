@@ -1005,13 +1005,17 @@ async function executeTenantBotFlowLogic(establishmentId: string, sock: WASocket
 
     // 1. Fetch the establishment's bot_flow and parameters from DB
     const estRes = await pool.query(
-      `SELECT name, opening_time, closing_time, msg_fallback, bot_flow 
+      `SELECT name, opening_time, closing_time, msg_fallback, bot_flow, bot_active 
        FROM establishments WHERE id = $1`, 
       [establishmentId]
     );
     if (estRes.rows.length === 0) return;
     
     const est = estRes.rows[0];
+    if (est.bot_active === false) {
+      console.log(`[SessionManager] Bot is disabled for establishment ${establishmentId}. Ignoring incoming message.`);
+      return;
+    }
     session.establishmentName = est.name;
     session.establishmentOpening = est.opening_time.substring(0, 5);
     session.establishmentClosing = est.closing_time.substring(0, 5);
@@ -1675,7 +1679,11 @@ export function terminateChatSession(establishmentId: string, phone: string) {
 export async function sendManualMessage(establishmentId: string, phone: string, text: string) {
   const sock = activeSockets.get(establishmentId);
   if (!sock) {
-    throw new Error('Sem sessão ativa do WhatsApp para este estabelecimento.');
+    if (establishmentId === '00000000-0000-0000-0000-000000000000') {
+      throw new Error('A sessão do WhatsApp central da plataforma BarberHub não está pareada. Por favor, re-escaneie o código QR na aba de Super Admin.');
+    } else {
+      throw new Error('Sem sessão pareada do WhatsApp ativa para o seu estabelecimento. Conecte-o nas configurações.');
+    }
   }
 
   const normalized = normalizeJid(phone);

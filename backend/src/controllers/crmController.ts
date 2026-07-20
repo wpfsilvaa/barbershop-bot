@@ -202,3 +202,45 @@ export const listEstablishmentFeedbacks = async (req: AuthenticatedRequest, res:
     return res.status(500).json({ error: 'Internal server error.' });
   }
 };
+
+// 6. Create client manually
+export const createEstablishmentClient = async (req: AuthenticatedRequest, res: Response) => {
+  const { establishmentId } = req.params;
+  const { name, phone, notes } = req.body;
+
+  if (!name || !phone) {
+    return res.status(400).json({ error: 'Name and phone are required.' });
+  }
+
+  // Normalizar telefone (apenas dígitos)
+  let cleanPhone = phone.replace(/\D/g, '').trim();
+  if (cleanPhone.startsWith('55') && cleanPhone.length > 11) {
+    // Ok, já está com DDI
+  } else {
+    cleanPhone = '55' + cleanPhone;
+  }
+
+  try {
+    // Verificar se já existe um cliente com esse mesmo telefone nessa barbearia
+    const checkRes = await pool.query(
+      'SELECT id FROM clients WHERE establishment_id = $1 AND phone = $2',
+      [establishmentId, cleanPhone]
+    );
+
+    if (checkRes.rows.length > 0) {
+      return res.status(400).json({ error: 'Já existe um cliente com este número de telefone cadastrado neste estabelecimento.' });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO clients (establishment_id, name, phone, notes, accept_promotions) 
+       VALUES ($1, $2, $3, $4, $5) 
+       RETURNING *`,
+      [establishmentId, name, cleanPhone, notes || '', true]
+    );
+
+    return res.json(result.rows[0]);
+  } catch (error: any) {
+    console.error('[crmController] Error creating client:', error);
+    return res.status(500).json({ error: 'Internal server error.' });
+  }
+};

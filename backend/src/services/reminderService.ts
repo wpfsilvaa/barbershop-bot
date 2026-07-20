@@ -5,15 +5,29 @@ import { getActiveEstablishmentSockets } from './whatsappManager';
 export function startReminderScheduler() {
   console.log('Reminder scheduler loaded. Initializing checking intervals...');
   
-  // Run check once on boot after 15 seconds, then every 24 hours
+  // Run checks once on boot after 15 seconds, then every 24 hours
   setTimeout(() => {
-    checkAndSendReminders().catch((err) => console.error('Error on initial checkAndSendReminders:', err));
+    runAllDailyChecks();
   }, 15000);
 
   // Set interval for every 24 hours
   setInterval(() => {
-    checkAndSendReminders().catch((err) => console.error('Error on scheduled checkAndSendReminders:', err));
+    runAllDailyChecks();
   }, 24 * 60 * 60 * 1000);
+}
+
+async function runAllDailyChecks() {
+  try {
+    await checkAndSendReminders();
+  } catch (err) {
+    console.error('Error on scheduled checkAndSendReminders:', err);
+  }
+
+  try {
+    await checkAndSendLicenseReminders();
+  } catch (err) {
+    console.error('Error on scheduled checkAndSendLicenseReminders:', err);
+  }
 }
 
 async function checkAndSendReminders() {
@@ -26,6 +40,8 @@ async function checkAndSendReminders() {
   }
 
   for (const [establishmentId, sock] of activeSessions) {
+    if (establishmentId === '00000000-0000-0000-0000-000000000000') continue; // Skip super admin central session
+
     try {
       // Query appointments for TOMORROW where client has an active subscription plan inside this establishment
       const result = await pool.query(
@@ -69,5 +85,60 @@ async function checkAndSendReminders() {
     } catch (error) {
       console.error(`[ReminderService] Error checking reminders for establishment ${establishmentId}:`, error);
     }
+  }
+}
+
+async function checkAndSendLicenseReminders() {
+  console.log('⏰ Running daily license expiration reminders (3 days warning)...');
+
+  const activeSessions = getActiveEstablishmentSockets();
+  const superAdminSession = activeSessions.find(([estId]) => estId === '00000000-0000-0000-0000-000000000000');
+
+  if (!superAdminSession) {
+    console.log('[ReminderService] Super Admin WhatsApp session is not active. Skipping license expiration warnings.');
+    return;
+  }
+
+  const [_, superSock] = superAdminSession;
+
+  try {
+    // Search for establishments expiring in exactly 3 days
+    const result = await pool.query(
+      `SELECT e.id as establishment_id, e.name as establishment_name, e.expires_at,
+              u.name as owner_name, u.phone as owner_phone
+       FROM establishments e
+       JOIN users u ON e.id = u.establishment_id AND u.role = 'owner'
+       WHERE e.is_active = true
+         AND DATE(e.expires_at AT TIME ZONE 'UTC') = CURRENT_DATE + INTERVAL '3 days'`
+    );
+
+    if (result.rows.length > 0) {
+      console.log(`[ReminderService] Found ${result.rows.length} establishments expiring in 3 days. Sending notifications...`);
+    }
+
+    for (const row of result.rows) {
+      const { establishment_name, expires_at, owner_name, owner_phone } = row;
+      if (!owner_phone) continue;
+
+      const date = new Date(expires_at);
+      const dateStr = date.toLocaleDateString('pt-BR');
+
+      // Normalize phone number to Baileys JID format
+      let cleanPhone = owner_phone.replace(/\D/g, '').trim();
+      if (!cleanPhone.startsWith('55') && cleanPhone.length > 0) {
+        cleanPhone = '55' + cleanPhone;
+      }
+      const clientJid = cleanPhone.includes('@') ? cleanPhone : `${cleanPhone}@s.whatsapp.net`;
+
+      const messageText = `⚠️ *Lembrete de Vencimento BarberHub* ⚠️\n\n` +
+                          `Olá, *${owner_name}*!\n\nPassando para lembrar que a licença do seu estabelecimento *${establishment_name}* expira em exatamente *3 dias* (em *${dateStr}*).\n\n` +
+                          `Evite a interrupção dos seus serviços. Realize o pagamento de renovação e envie o comprovante para nós!\n\n` +
+                          `Atenciosamente,\n*Equipe BarberHub* 💈`;
+
+      console.log(`[ReminderService] Sending license expiration warning to ${owner_name} (${owner_phone})...`);
+      await superSock.sendMessage(clientJid, { text: messageText });
+    }
+  } catch (error) {
+    console.error('[ReminderService] Error in checkAndSendLicenseReminders:', error);
   }
 }

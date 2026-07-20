@@ -155,6 +155,13 @@ export const Dashboard: React.FC = () => {
   const [searchClientQuery, setSearchClientQuery] = useState<string>('');
   const [editingClient, setEditingClient] = useState<any | null>(null);
   const [showEditClientModal, setShowEditClientModal] = useState<boolean>(false);
+
+  // Add Contact Manual States
+  const [showCreateClientModal, setShowCreateClientModal] = useState<boolean>(false);
+  const [newClientName, setNewClientName] = useState<string>('');
+  const [newClientPhone, setNewClientPhone] = useState<string>('');
+  const [newClientNotes, setNewClientNotes] = useState<string>('');
+  const [createClientLoading, setCreateClientLoading] = useState<boolean>(false);
   
   // Promo Config
   const [promoDelayMin, setPromoDelayMin] = useState<number>(10);
@@ -201,6 +208,12 @@ export const Dashboard: React.FC = () => {
   const [superSelectedUser, setSuperSelectedUser] = useState<any | null>(null);
   const [superNewPassword, setSuperNewPassword] = useState('');
   const [superSearchUser, setSuperSearchUser] = useState('');
+
+  // Super Admin - Chat States
+  const [superChatOpen, setSuperChatOpen] = useState(false);
+  const [superChatContact, setSuperChatContact] = useState<any | null>(null);
+  const [superChatMessage, setSuperChatMessage] = useState('');
+  const [superChatSending, setSuperChatSending] = useState(false);
 
   // Super Admin - Create Establishment States
   const [superNewEstName, setSuperNewEstName] = useState('');
@@ -257,6 +270,7 @@ export const Dashboard: React.FC = () => {
 
   // Form states - Settings & Message Flowchart Customizer
   const [shopName, setShopName] = useState('');
+  const [botActive, setBotActive] = useState<boolean>(true);
   const [primaryColor, setPrimaryColor] = useState('');
   const [secondaryColor, setSecondaryColor] = useState('');
   const [bgColor, setBgColor] = useState('');
@@ -495,6 +509,35 @@ export const Dashboard: React.FC = () => {
     }
   };
 
+  const handleCreateClient = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user?.establishment_id) return;
+    if (!newClientName.trim() || !newClientPhone.trim()) {
+      showToast('Nome e telefone são obrigatórios.', 'error');
+      return;
+    }
+
+    setCreateClientLoading(true);
+    try {
+      await apiRequest(`/establishments/${user.establishment_id}/clients`, 'POST', {
+        name: newClientName.trim(),
+        phone: newClientPhone.trim(),
+        notes: newClientNotes.trim()
+      });
+
+      showToast('Contato cadastrado com sucesso!');
+      setShowCreateClientModal(false);
+      setNewClientName('');
+      setNewClientPhone('');
+      setNewClientNotes('');
+      loadClients();
+    } catch (err: any) {
+      showToast(err.message || 'Erro ao cadastrar contato.', 'error');
+    } finally {
+      setCreateClientLoading(false);
+    }
+  };
+
   const handleSavePromoConfig = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user?.establishment_id || (user.role !== 'owner' && user.role !== 'admin')) return;
@@ -573,6 +616,7 @@ export const Dashboard: React.FC = () => {
   useEffect(() => {
     if (establishment) {
       setShopName(establishment.name);
+      setBotActive(establishment.bot_active !== false);
       setPrimaryColor(establishment.primary_color);
       setSecondaryColor(establishment.secondary_color);
       setBgColor(establishment.background_color);
@@ -769,6 +813,23 @@ export const Dashboard: React.FC = () => {
     }
   };
 
+  // Delete establishment and all its cascade records
+  const handleDeleteEstablishment = async (establishmentId: string, name: string) => {
+    const confirmFirst = window.confirm(`ATENÇÃO: Tem certeza que deseja EXCLUIR permanentemente a barbearia "${name}"?\n\nEsta ação é irreversível e removerá todos os barbeiros, clientes, agendamentos, feedbacks e configurações vinculadas.`);
+    if (!confirmFirst) return;
+
+    const confirmSecond = window.confirm(`CONFIRMAÇÃO FINAL: Para confirmar a exclusão da barbearia "${name}" e todos os seus dados do sistema, clique em OK.`);
+    if (!confirmSecond) return;
+
+    try {
+      const response = await apiRequest(`/admin/establishments/${establishmentId}`, 'DELETE');
+      showToast(response.message || 'Barbearia excluída com sucesso!');
+      loadSuperAdminData();
+    } catch (err: any) {
+      showToast(err.message || 'Erro ao excluir barbearia.', 'error');
+    }
+  };
+
   // Save establishment commission percent administratively
   const handleSuperSaveCommission = async (estId: string, percent: number) => {
     try {
@@ -802,6 +863,33 @@ export const Dashboard: React.FC = () => {
       setSuperSessions(sessionsData);
     } catch (err: any) {
       showToast(err.message || 'Erro ao alterar status da barbearia.', 'error');
+    }
+  };
+
+  // Send WhatsApp message to any partner/barber from Super Admin (BarberHub central bot)
+  const handleSendSuperMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!superChatContact || !superChatMessage.trim()) return;
+
+    setSuperChatSending(true);
+    try {
+      let cleanPhone = superChatContact.phone.replace(/\D/g, '').trim();
+      if (!cleanPhone.startsWith('55') && cleanPhone.length > 0) {
+        cleanPhone = '55' + cleanPhone;
+      }
+
+      await apiRequest(`/establishments/00000000-0000-0000-0000-000000000000/bot/chats/${cleanPhone}/message`, 'POST', {
+        message: superChatMessage.trim()
+      });
+
+      showToast(`Mensagem enviada com sucesso para ${superChatContact.name}!`);
+      setSuperChatOpen(false);
+      setSuperChatMessage('');
+      setSuperChatContact(null);
+    } catch (err: any) {
+      showToast(err.message || 'Erro ao enviar mensagem por WhatsApp.', 'error');
+    } finally {
+      setSuperChatSending(false);
     }
   };
 
@@ -1120,7 +1208,8 @@ export const Dashboard: React.FC = () => {
         logo_url: logoUrl,
         address: shopAddress,
         bio: shopBio,
-        photos: shopPhotos
+        photos: shopPhotos,
+        bot_active: botActive
       });
 
       updateThemeColors(updated);
@@ -1727,6 +1816,45 @@ export const Dashboard: React.FC = () => {
     setBotFlow(updatedFlow);
     setSelectedNodeId(newNodeId);
     showToast('Novo nó de verificação condicional criado! Adicione caminhos abaixo.');
+  };
+
+  // Restore Default Flowchart Preset
+  const handleRestoreDefaultFlowchart = () => {
+    if (!window.confirm('Atenção: Isso irá redefinir todo o fluxograma para o modelo padrão de agendamento automático. Suas alterações personalizadas não salvas serão perdidas. Deseja prosseguir?')) return;
+
+    const defaultFlow = {
+      nodes: [
+        { id: 'start', type: 'start', title: 'Início', x: 50, y: 250 },
+        { id: 'welcome', type: 'message', title: 'Boas-Vindas', x: 350, y: 250, text: 'Olá! Seja bem-vindo à Barbearia.' },
+        { id: 'check_intent', type: 'condition', title: 'Verificar Opção', x: 690, y: 250, options: [
+          { key: '1', label: 'Agendar', target: 'select_barber' },
+          { key: '2', label: 'Contato', target: 'other_help' }
+        ]},
+        { id: 'select_barber', type: 'action', actionType: 'select_barber', title: '1. Escolher Barbeiro', x: 1050, y: 80, target: 'select_date' },
+        { id: 'select_date', type: 'action', actionType: 'select_date', title: '2. Escolher Data', x: 1410, y: 80, target: 'select_slot' },
+        { id: 'select_slot', type: 'action', actionType: 'select_slot', title: '3. Escolher Horário', x: 1770, y: 250, target: 'confirmed' },
+        { id: 'confirmed', type: 'message', title: 'Confirmação', x: 2130, y: 250, text: '✅ *Agendamento Confirmado!*\n\n*Profissional:* {barbeiro}\n*Horário:* {horario}\n*Data:* {data}\n\nSeu agendamento foi registrado com sucesso! 💈', target: 'offer_plan' },
+        { id: 'offer_plan', type: 'action', actionType: 'offer_plan', title: '4. Clube Assinatura', x: 2490, y: 250, target: 'end' },
+        { id: 'end', type: 'end', title: 'Fim', x: 2850, y: 250 },
+        { id: 'other_help', type: 'message', title: 'Informações', x: 1050, y: 420, text: '💈 Nossos horários de atendimento são das {abertura} às {fechamento}.\n📞 Se precisar falar com um atendente, nos ligue no (11) 99999-8888. Obrigado! 👍', target: 'end' }
+      ],
+      edges: [
+        { id: 'e_start_welcome', source: 'start', target: 'welcome' },
+        { id: 'e_welcome_check_intent', source: 'welcome', target: 'check_intent' },
+        { id: 'e_check_intent_1_select_barber', source: 'check_intent', sourceHandle: '1', target: 'select_barber' },
+        { id: 'e_check_intent_2_other_help', source: 'check_intent', sourceHandle: '2', target: 'other_help' },
+        { id: 'e_select_barber_select_date', source: 'select_barber', target: 'select_date' },
+        { id: 'e_select_date_select_slot', source: 'select_date', target: 'select_slot' },
+        { id: 'e_select_slot_confirmed', source: 'select_slot', target: 'confirmed' },
+        { id: 'e_confirmed_offer_plan', source: 'confirmed', target: 'offer_plan' },
+        { id: 'e_offer_plan_end', source: 'offer_plan', target: 'end' },
+        { id: 'e_other_help_end', source: 'other_help', target: 'end' }
+      ]
+    };
+
+    setBotFlow(defaultFlow);
+    setSelectedNodeId(null);
+    showToast('Modelo padrão carregado no editor! Lembre-se de clicar em "Salvar Fluxograma" para aplicar.');
   };
 
   // Delete a flowchart node
@@ -2688,6 +2816,14 @@ export const Dashboard: React.FC = () => {
                   <p style={{ color: 'var(--muted)', fontSize: '14px' }}>Crie novos caminhos, gerencie ramificações condicionais e arraste os nós para organizar</p>
                 </div>
                 <div style={{ display: 'flex', gap: '10px' }}>
+                  <button 
+                    className="btn-secondary" 
+                    style={{ gap: '6px', borderColor: 'rgba(212,175,55,0.3)', color: 'var(--primary)' }} 
+                    onClick={handleRestoreDefaultFlowchart}
+                  >
+                    <RefreshCw size={16} />
+                    <span>Restaurar Padrão</span>
+                  </button>
                   <button className="btn-secondary" style={{ gap: '6px' }} onClick={handleAddNewMessageNode}>
                     <Plus size={16} />
                     <span>Criar Mensagem</span>
@@ -2709,7 +2845,7 @@ export const Dashboard: React.FC = () => {
                 style={{ 
                   position: 'relative', 
                   width: '100%', 
-                  height: '500px', 
+                  height: '600px', 
                   backgroundColor: '#0f0f12', 
                   border: '1px solid rgba(255,255,255,0.06)', 
                   borderRadius: '12px', 
@@ -2722,7 +2858,7 @@ export const Dashboard: React.FC = () => {
                 onMouseLeave={handleCanvasMouseUp}
               >
                 {/* Scrollable canvas area */}
-                <div style={{ width: '1850px', height: '700px', position: 'relative', backgroundImage: 'radial-gradient(rgba(212, 175, 55, 0.08) 1.5px, transparent 1.5px)', backgroundSize: '24px 24px' }}>
+                <div style={{ width: '3200px', height: '800px', position: 'relative', backgroundImage: 'radial-gradient(rgba(212, 175, 55, 0.08) 1.5px, transparent 1.5px)', backgroundSize: '24px 24px' }}>
                   
                   {/* SVG Connecting Curves */}
                   <svg style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none' }}>
@@ -3001,7 +3137,7 @@ export const Dashboard: React.FC = () => {
                         )}
                         
                         {/* Output Port (Right) - Only render for standard nodes with single outputs */}
-                        {node.type !== 'end' && node.type !== 'action' && node.type !== 'condition' && (
+                        {node.type !== 'end' && node.type !== 'condition' && (
                           <div 
                             style={{ 
                               position: 'absolute', 
@@ -3687,6 +3823,46 @@ export const Dashboard: React.FC = () => {
                     Configurações Gerais
                   </h3>
 
+                  <div className="form-group" style={{ background: 'rgba(255,255,255,0.02)', padding: '16px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)', marginBottom: '20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div>
+                      <label className="form-label" style={{ margin: 0, fontWeight: 'bold', fontSize: '15px' }}>Chatbot WhatsApp Automático</label>
+                      <p style={{ color: 'var(--muted)', fontSize: '12px', margin: '4px 0 0 0' }}>
+                        Quando ativado, o bot responderá automaticamente agendamentos e contatos recebidos.
+                      </p>
+                    </div>
+                    <label style={{ position: 'relative', display: 'inline-block', width: '50px', height: '26px', cursor: 'pointer' }}>
+                      <input 
+                        type="checkbox" 
+                        checked={botActive}
+                        onChange={(e) => setBotActive(e.target.checked)}
+                        style={{ opacity: 0, width: 0, height: 0 }}
+                      />
+                      <span style={{ 
+                        position: 'absolute', 
+                        top: 0, 
+                        left: 0, 
+                        right: 0, 
+                        bottom: 0, 
+                        backgroundColor: botActive ? 'var(--primary)' : 'rgba(255,255,255,0.1)', 
+                        transition: '0.4s', 
+                        borderRadius: '34px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: botActive ? 'flex-end' : 'flex-start',
+                        padding: '3px'
+                      }}>
+                        <span style={{ 
+                          width: '20px', 
+                          height: '20px', 
+                          borderRadius: '50%', 
+                          backgroundColor: botActive ? '#121212' : '#ffffff', 
+                          transition: '0.4s',
+                          display: 'block'
+                        }} />
+                      </span>
+                    </label>
+                  </div>
+
                   <div className="form-group">
                     <label className="form-label">Nome do Estabelecimento</label>
                     <input type="text" className="form-input" value={shopName} onChange={(e) => setShopName(e.target.value)} required />
@@ -4135,18 +4311,37 @@ export const Dashboard: React.FC = () => {
                           </div>
                           <div style={{ display: 'flex', gap: '8px' }}>
                             {session.establishment_id !== '00000000-0000-0000-0000-000000000000' && (
-                              <button 
-                                className="btn-secondary" 
-                                style={{ 
-                                  padding: '6px 12px', 
-                                  fontSize: '12px', 
-                                  borderColor: session.is_active ? 'rgba(239,68,68,0.3)' : 'rgba(16,185,129,0.3)', 
-                                  color: session.is_active ? '#ef4444' : '#10b981' 
-                                }} 
-                                onClick={() => handleToggleEstablishmentStatus(session.establishment_id, session.is_active)}
-                              >
-                                <span>{session.is_active ? 'Bloquear' : 'Desbloquear'}</span>
-                              </button>
+                              <>
+                                <button 
+                                  className="btn-secondary" 
+                                  style={{ 
+                                    padding: '6px 12px', 
+                                    fontSize: '12px', 
+                                    borderColor: session.is_active ? 'rgba(239,68,68,0.3)' : 'rgba(16,185,129,0.3)', 
+                                    color: session.is_active ? '#ef4444' : '#10b981' 
+                                  }} 
+                                  onClick={() => handleToggleEstablishmentStatus(session.establishment_id, session.is_active)}
+                                >
+                                  <span>{session.is_active ? 'Bloquear' : 'Desbloquear'}</span>
+                                </button>
+
+                                <button 
+                                  className="btn-secondary" 
+                                  style={{ 
+                                    padding: '6px 8px', 
+                                    fontSize: '12px', 
+                                    borderColor: 'rgba(239,68,68,0.3)', 
+                                    color: '#ef4444',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center'
+                                  }} 
+                                  onClick={() => handleDeleteEstablishment(session.establishment_id, session.establishment_name)}
+                                  title="Excluir barbearia permanentemente"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              </>
                             )}
                             
                             {session.status === 'CONNECTED' ? (
@@ -4322,6 +4517,70 @@ export const Dashboard: React.FC = () => {
                           </tr>
                         );
                       })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Agenda de Contatos e Chat de Suporte */}
+              <div className="card-premium" style={{ marginTop: '24px' }}>
+                <h3 style={{ fontSize: '18px', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Users size={18} style={{ color: 'var(--primary)' }} />
+                  Agenda de Contatos dos Parceiros (WhatsApp)
+                </h3>
+                <p style={{ color: 'var(--muted)', fontSize: '13px', marginBottom: '20px' }}>
+                  Visualize os contatos de todos os donos e barbeiros cadastrados na plataforma BarberHub e envie mensagens rápidas de suporte via o WhatsApp central da plataforma.
+                </p>
+
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: '700px' }}>
+                    <thead>
+                      <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                        <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase' }}>Nome</th>
+                        <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase' }}>Email</th>
+                        <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase' }}>Telefone</th>
+                        <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase' }}>Cargo</th>
+                        <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase' }}>Barbearia</th>
+                        <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase', textAlign: 'right' }}>Ações</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {superUsers
+                        .filter(u => u.role !== 'admin' && u.phone) // Mostra apenas parceiros que têm telefone cadastrado
+                        .map((u) => (
+                          <tr key={u.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                            <td style={{ padding: '12px 8px', fontSize: '14px', fontWeight: 'bold' }}>{u.name}</td>
+                            <td style={{ padding: '12px 8px', fontSize: '13px', color: 'var(--muted)' }}>{u.email}</td>
+                            <td style={{ padding: '12px 8px', fontSize: '13px' }}>{u.phone}</td>
+                            <td style={{ padding: '12px 8px', fontSize: '13px' }}>
+                              <span style={{ 
+                                fontSize: '10px', 
+                                padding: '2px 6px', 
+                                borderRadius: '4px', 
+                                background: u.role === 'owner' ? 'rgba(212,175,55,0.1)' : 'rgba(255,255,255,0.05)', 
+                                color: u.role === 'owner' ? 'var(--primary)' : 'var(--foreground)',
+                                fontWeight: 'bold'
+                              }}>
+                                {u.role === 'owner' ? 'Dono' : 'Barbeiro'}
+                              </span>
+                            </td>
+                            <td style={{ padding: '12px 8px', fontSize: '13px', color: 'var(--muted)' }}>{u.establishment_name || '-'}</td>
+                            <td style={{ padding: '12px 8px', fontSize: '14px', textAlign: 'right' }}>
+                              <button 
+                                className="btn-primary" 
+                                style={{ padding: '6px 12px', fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                                onClick={() => {
+                                  setSuperChatContact(u);
+                                  setSuperChatMessage('');
+                                  setSuperChatOpen(true);
+                                }}
+                              >
+                                <MessageCircle size={12} />
+                                <span>Conversar</span>
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
                     </tbody>
                   </table>
                 </div>
@@ -4625,10 +4884,25 @@ export const Dashboard: React.FC = () => {
                 {/* Left Column: Clients Directory */}
                 <div className="card-premium" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
-                    <h3 style={{ fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <BookOpen size={20} style={{ color: 'var(--primary)' }} />
-                      Lista Telefônica do Salão
-                    </h3>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                      <h3 style={{ fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px', margin: 0 }}>
+                        <BookOpen size={20} style={{ color: 'var(--primary)' }} />
+                        Lista Telefônica do Salão
+                      </h3>
+                      <button 
+                        className="btn-primary" 
+                        style={{ padding: '6px 12px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}
+                        onClick={() => {
+                          setNewClientName('');
+                          setNewClientPhone('');
+                          setNewClientNotes('');
+                          setShowCreateClientModal(true);
+                        }}
+                      >
+                        <UserPlus size={14} />
+                        <span>Novo Contato</span>
+                      </button>
+                    </div>
                     
                     {/* Search Input */}
                     <div style={{ position: 'relative', width: '100%', maxWidth: '280px' }}>
@@ -4949,6 +5223,67 @@ export const Dashboard: React.FC = () => {
             </div>
           )}
 
+          {/* MODAL: SUPER ADMIN CHAT SUPPORT */}
+          {superChatOpen && superChatContact && (
+            <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.8)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 999, padding: '20px' }}>
+              <div className="glass-panel animate-fade-in" style={{ width: '100%', maxWidth: '500px', padding: '32px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+                  <h3 style={{ fontSize: '20px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <MessageCircle style={{ color: 'var(--primary)' }} />
+                    Enviar WhatsApp de Suporte
+                  </h3>
+                  <button className="btn-secondary" style={{ padding: '6px', border: 'none', color: 'var(--muted)' }} onClick={() => {
+                    setSuperChatOpen(false);
+                    setSuperChatContact(null);
+                    setSuperChatMessage('');
+                  }}><X size={20} /></button>
+                </div>
+
+                <form onSubmit={handleSendSuperMessage}>
+                  <div style={{ background: 'rgba(255,255,255,0.02)', padding: '12px 16px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)', marginBottom: '20px' }}>
+                    <p style={{ fontSize: '14px', marginBottom: '4px' }}>
+                      Destinatário: <strong>{superChatContact.name}</strong> ({superChatContact.role === 'owner' ? 'Dono' : 'Barbeiro'})
+                    </p>
+                    <p style={{ fontSize: '13px', color: 'var(--muted)', marginBottom: '4px' }}>
+                      Telefone: <strong>{superChatContact.phone}</strong>
+                    </p>
+                    {superChatContact.establishment_name && (
+                      <p style={{ fontSize: '13px', color: 'var(--muted)', margin: 0 }}>
+                        Barbearia: <strong>{superChatContact.establishment_name}</strong>
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Mensagem (será enviada via WhatsApp central)</label>
+                    <textarea 
+                      className="form-input" 
+                      style={{ width: '100%', minHeight: '120px', resize: 'vertical', fontFamily: 'inherit', fontSize: '14px', padding: '12px' }}
+                      placeholder="Digite sua mensagem de suporte aqui..." 
+                      value={superChatMessage} 
+                      onChange={(e) => setSuperChatMessage(e.target.value)} 
+                      required 
+                    />
+                    <span style={{ fontSize: '11px', color: 'var(--muted)', display: 'block', marginTop: '6px' }}>
+                      Dica: Use markdown para negrito, ex: *texto em negrito*
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '12px', marginTop: '24px', justifyContent: 'flex-end' }}>
+                    <button type="button" className="btn-secondary" onClick={() => {
+                      setSuperChatOpen(false);
+                      setSuperChatContact(null);
+                      setSuperChatMessage('');
+                    }} disabled={superChatSending}>Cancelar</button>
+                    <button type="submit" className="btn-primary" disabled={superChatSending}>
+                      {superChatSending ? 'Enviando...' : 'Enviar WhatsApp'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
           {/* MODAL: EDIT CLIENT / CONTACT */}
           {showEditClientModal && editingClient && (
             <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.8)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 999, padding: '20px' }}>
@@ -5030,6 +5365,92 @@ export const Dashboard: React.FC = () => {
                       style={{ flex: 1, color: '#121212', fontWeight: 'bold' }}
                     >
                       Salvar Alterações
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* MODAL: CREATE CLIENT / CONTACT (MANUAL) */}
+          {showCreateClientModal && (
+            <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.8)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 999, padding: '20px' }}>
+              <div className="glass-panel animate-fade-in" style={{ width: '100%', maxWidth: '480px', padding: '32px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+                  <h3 style={{ fontSize: '20px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <UserPlus size={20} style={{ color: 'var(--primary)' }} />
+                    Cadastrar Novo Contato
+                  </h3>
+                  <button className="btn-secondary" style={{ padding: '6px', border: 'none', color: 'var(--muted)' }} onClick={() => {
+                    setShowCreateClientModal(false);
+                    setNewClientName('');
+                    setNewClientPhone('');
+                    setNewClientNotes('');
+                  }}><X size={20} /></button>
+                </div>
+
+                <form onSubmit={handleCreateClient} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                  <div className="form-group">
+                    <label className="form-label">Nome Completo</label>
+                    <input 
+                      type="text" 
+                      className="form-input" 
+                      placeholder="Ex: João da Silva"
+                      value={newClientName} 
+                      onChange={(e) => setNewClientName(e.target.value)} 
+                      required 
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">WhatsApp (DDD + Número)</label>
+                    <input 
+                      type="tel" 
+                      className="form-input" 
+                      placeholder="Ex: 11999998888"
+                      value={newClientPhone} 
+                      onChange={(e) => setNewClientPhone(e.target.value)} 
+                      required 
+                    />
+                    <span style={{ fontSize: '11px', color: 'var(--muted)', display: 'block', marginTop: '6px' }}>
+                      Não é necessário colocar o código do país (+55). Insira apenas o DDD e o número de celular.
+                    </span>
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Observações e Preferências do Cliente (Opcional)</label>
+                    <textarea 
+                      className="form-input" 
+                      rows={4}
+                      placeholder="Ex: Prefere corte social com tesoura. Usa gel finalizador."
+                      value={newClientNotes} 
+                      onChange={(e) => setNewClientNotes(e.target.value)} 
+                      style={{ resize: 'vertical', padding: '10px' }}
+                    />
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '12px', marginTop: '10px' }}>
+                    <button 
+                      type="button" 
+                      className="btn-secondary" 
+                      style={{ flex: 1 }} 
+                      onClick={() => {
+                        setShowCreateClientModal(false);
+                        setNewClientName('');
+                        setNewClientPhone('');
+                        setNewClientNotes('');
+                      }}
+                      disabled={createClientLoading}
+                    >
+                      Cancelar
+                    </button>
+                    <button 
+                      type="submit" 
+                      className="btn-primary" 
+                      style={{ flex: 1, color: '#121212', fontWeight: 'bold' }}
+                      disabled={createClientLoading}
+                    >
+                      {createClientLoading ? 'Cadastrando...' : 'Cadastrar Contato'}
                     </button>
                   </div>
                 </form>

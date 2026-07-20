@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.listEstablishmentFeedbacks = exports.sendPromoCampaign = exports.updatePromoConfig = exports.getPromoConfig = exports.updateEstablishmentClient = exports.listEstablishmentClients = void 0;
+exports.createEstablishmentClient = exports.listEstablishmentFeedbacks = exports.sendPromoCampaign = exports.updatePromoConfig = exports.getPromoConfig = exports.updateEstablishmentClient = exports.listEstablishmentClients = void 0;
 const db_1 = __importDefault(require("../config/db"));
 const whatsappManager_1 = require("../services/whatsappManager");
 // 1. List clients of an establishment
@@ -177,3 +177,35 @@ const listEstablishmentFeedbacks = async (req, res) => {
     }
 };
 exports.listEstablishmentFeedbacks = listEstablishmentFeedbacks;
+// 6. Create client manually
+const createEstablishmentClient = async (req, res) => {
+    const { establishmentId } = req.params;
+    const { name, phone, notes } = req.body;
+    if (!name || !phone) {
+        return res.status(400).json({ error: 'Name and phone are required.' });
+    }
+    // Normalizar telefone (apenas dígitos)
+    let cleanPhone = phone.replace(/\D/g, '').trim();
+    if (cleanPhone.startsWith('55') && cleanPhone.length > 11) {
+        // Ok, já está com DDI
+    }
+    else {
+        cleanPhone = '55' + cleanPhone;
+    }
+    try {
+        // Verificar se já existe um cliente com esse mesmo telefone nessa barbearia
+        const checkRes = await db_1.default.query('SELECT id FROM clients WHERE establishment_id = $1 AND phone = $2', [establishmentId, cleanPhone]);
+        if (checkRes.rows.length > 0) {
+            return res.status(400).json({ error: 'Já existe um cliente com este número de telefone cadastrado neste estabelecimento.' });
+        }
+        const result = await db_1.default.query(`INSERT INTO clients (establishment_id, name, phone, notes, accept_promotions) 
+       VALUES ($1, $2, $3, $4, $5) 
+       RETURNING *`, [establishmentId, name, cleanPhone, notes || '', true]);
+        return res.json(result.rows[0]);
+    }
+    catch (error) {
+        console.error('[crmController] Error creating client:', error);
+        return res.status(500).json({ error: 'Internal server error.' });
+    }
+};
+exports.createEstablishmentClient = createEstablishmentClient;

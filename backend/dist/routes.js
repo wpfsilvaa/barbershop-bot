@@ -69,6 +69,7 @@ router.post('/establishments/:establishmentId/plans', auth_1.verifyToken, auth_1
 router.delete('/establishments/:establishmentId/plans/:planId', auth_1.verifyToken, auth_1.checkEstablishmentAccess, (0, auth_1.requireRole)(['owner', 'admin']), planController_1.deletePlan);
 // Contacts (Clients) and Promotions Marketing CRM Routes
 router.get('/establishments/:establishmentId/clients', auth_1.verifyToken, auth_1.checkEstablishmentAccess, (0, auth_1.requireRole)(['owner', 'admin', 'barber']), crmController_1.listEstablishmentClients);
+router.post('/establishments/:establishmentId/clients', auth_1.verifyToken, auth_1.checkEstablishmentAccess, (0, auth_1.requireRole)(['owner', 'admin', 'barber']), crmController_1.createEstablishmentClient);
 router.put('/establishments/:establishmentId/clients/:clientId', auth_1.verifyToken, auth_1.checkEstablishmentAccess, (0, auth_1.requireRole)(['owner', 'admin', 'barber']), crmController_1.updateEstablishmentClient);
 router.get('/establishments/:establishmentId/promo-config', auth_1.verifyToken, auth_1.checkEstablishmentAccess, (0, auth_1.requireRole)(['owner', 'admin']), crmController_1.getPromoConfig);
 router.put('/establishments/:establishmentId/promo-config', auth_1.verifyToken, auth_1.checkEstablishmentAccess, (0, auth_1.requireRole)(['owner', 'admin']), crmController_1.updatePromoConfig);
@@ -269,6 +270,7 @@ router.post('/admin/whatsapp-sessions/:establishmentId/logout', auth_1.verifyTok
 router.put('/admin/establishments/:establishmentId/commission', auth_1.verifyToken, (0, auth_1.requireRole)(['admin']), adminController_1.updateEstablishmentCommission);
 router.put('/admin/establishments/:establishmentId/status', auth_1.verifyToken, (0, auth_1.requireRole)(['admin']), adminController_1.updateEstablishmentStatus);
 router.put('/admin/establishments/:establishmentId/license', auth_1.verifyToken, (0, auth_1.requireRole)(['admin']), adminController_1.updateEstablishmentLicense);
+router.delete('/admin/establishments/:establishmentId', auth_1.verifyToken, (0, auth_1.requireRole)(['admin']), adminController_1.deleteEstablishment);
 // Establishment Metrics (Owner, Admin or Barber)
 router.get('/establishments/:establishmentId/metrics', auth_1.verifyToken, auth_1.checkEstablishmentAccess, adminController_1.getEstablishmentMetrics);
 // Global metrics for Super Admin

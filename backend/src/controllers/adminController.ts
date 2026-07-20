@@ -7,7 +7,7 @@ import { getActiveSessionsList, disconnectWhatsAppSession } from '../services/wh
 export const listAllUsers = async (req: Request, res: Response) => {
   try {
     const result = await pool.query(`
-      SELECT u.id, u.name, u.email, u.role, u.is_active, u.created_at,
+      SELECT u.id, u.name, u.email, u.role, u.is_active, u.created_at, u.phone,
              e.id as establishment_id, e.name as establishment_name
       FROM users u
       LEFT JOIN establishments e ON u.establishment_id = e.id
@@ -438,5 +438,47 @@ export const updateEstablishmentLicense = async (req: Request, res: Response) =>
   } catch (error) {
     console.error('Update establishment license error:', error);
     return res.status(500).json({ error: 'Internal server error.' });
+  }
+};
+
+// 10. Delete establishment and all its cascade children (Super Admin Only)
+export const deleteEstablishment = async (req: Request, res: Response) => {
+  const { establishmentId } = req.params;
+
+  if (establishmentId === '00000000-0000-0000-0000-000000000000') {
+    return res.status(400).json({ error: 'Cannot delete the system admin establishment.' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // 1. Verify existence
+    const estRes = await client.query('SELECT id, name FROM establishments WHERE id = $1', [establishmentId]);
+    if (estRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Establishment not found.' });
+    }
+
+    const estName = estRes.rows[0].name;
+
+    // 2. Disconnect WhatsApp session from memory if connected
+    try {
+      await disconnectWhatsAppSession(String(establishmentId));
+    } catch (err) {
+      console.log('No active whatsapp session to disconnect from memory.');
+    }
+
+    // 3. Delete from DB (foreign key constraints with ON DELETE CASCADE will handle all children)
+    await client.query('DELETE FROM establishments WHERE id = $1', [establishmentId]);
+
+    await client.query('COMMIT');
+    return res.json({ message: `Barbearia "${estName}" e todos os seus barbeiros e dados vinculados foram excluídos com sucesso.` });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Delete establishment error:', error);
+    return res.status(500).json({ error: 'Internal server error.' });
+  } finally {
+    client.release();
   }
 };

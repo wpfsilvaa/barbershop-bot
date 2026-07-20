@@ -31,6 +31,7 @@ CREATE TABLE establishments (
     bio TEXT,
     is_active BOOLEAN DEFAULT TRUE,
     expires_at TIMESTAMP WITH TIME ZONE DEFAULT (CURRENT_TIMESTAMP + INTERVAL '7 days'),
+    bot_active BOOLEAN DEFAULT TRUE,
     promo_delay_min_seconds INT DEFAULT 10,
     promo_delay_max_seconds INT DEFAULT 20,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
