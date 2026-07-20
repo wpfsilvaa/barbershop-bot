@@ -1,0 +1,17 @@
+{
+  "short_name": "BarberHub",
+  "name": "BarberHub - Agendamento Online & Gestão de Barbearias",
+  "icons": [
+    {
+      "src": "/app-icon.jpg",
+      "type": "image/jpeg",
+      "sizes": "512x512",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#121212",
+  "theme_color": "#d4af37",
+  "display": "standalone",
+  "orientation": "portrait"
+}
