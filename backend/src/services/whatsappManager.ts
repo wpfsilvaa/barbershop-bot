@@ -531,10 +531,23 @@ async function handleTenantBotFlow(establishmentId: string, sock: WASocket, msg:
     }
   }
 
-  const rawPhone = msg.key?.remoteJid;
+  let rawPhone = msg.key?.remoteJid;
   if (!rawPhone) return;
 
-  let phone = normalizeJid(rawPhone);
+  // 1. Try to resolve PN (Phone Number) JID directly from message metadata fields if remoteJid is LID
+  if (rawPhone.endsWith('@lid')) {
+    const remoteJidAlt = (msg.key as any).remoteJidAlt;
+    const senderPn = (msg as any).senderPn;
+    if (remoteJidAlt && remoteJidAlt.endsWith('@s.whatsapp.net')) {
+      rawPhone = remoteJidAlt;
+      console.log(`[LidResolverMsg] Resolved JID from msg.key.remoteJidAlt: ${rawPhone}`);
+    } else if (senderPn && senderPn.endsWith('@s.whatsapp.net')) {
+      rawPhone = senderPn;
+      console.log(`[LidResolverMsg] Resolved JID from msg.senderPn: ${rawPhone}`);
+    }
+  }
+
+  let phone = normalizeJid(rawPhone!);
   if (phone.endsWith('@lid')) {
     let mappedPhone = lidToPhoneMap.get(phone);
     if (!mappedPhone) {
@@ -556,6 +569,17 @@ async function handleTenantBotFlow(establishmentId: string, sock: WASocket, msg:
     }
     if (mappedPhone) {
       phone = `${mappedPhone}@s.whatsapp.net`;
+    }
+  }
+
+  // Save the mapping discovered from message metadata sync if applicable
+  if (msg.key?.remoteJid && msg.key.remoteJid.endsWith('@lid') && phone.endsWith('@s.whatsapp.net')) {
+    const cleanLid = msg.key.remoteJid.split('@')[0];
+    const cleanPhone = phone.split('@')[0];
+    if (cleanLid !== cleanPhone) {
+      resolveLidRetroactively(msg.key.remoteJid, phone).catch((err) => {
+        console.error('[LidResolverMsgSync] Failed to resolve LID retroactively:', err);
+      });
     }
   }
 
