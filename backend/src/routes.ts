@@ -22,6 +22,13 @@ import {
   completeAppointment
 } from './controllers/bookingController';
 import { listPlans, createOrUpdatePlan, deletePlan } from './controllers/planController';
+import { 
+  listEstablishmentClients, 
+  updateEstablishmentClient, 
+  getPromoConfig, 
+  updatePromoConfig, 
+  sendPromoCampaign 
+} from './controllers/crmController';
 import { verifyToken, requireRole, checkEstablishmentAccess, AuthenticatedRequest } from './middleware/auth';
 import { authRateLimiter, apiRateLimiter } from './middleware/security';
 import { 
@@ -240,6 +247,43 @@ router.delete(
   checkEstablishmentAccess,
   requireRole(['owner', 'admin']),
   deletePlan
+);
+
+// Contacts (Clients) and Promotions Marketing CRM Routes
+router.get(
+  '/establishments/:establishmentId/clients',
+  verifyToken,
+  checkEstablishmentAccess,
+  requireRole(['owner', 'admin', 'barber']),
+  listEstablishmentClients
+);
+router.put(
+  '/establishments/:establishmentId/clients/:clientId',
+  verifyToken,
+  checkEstablishmentAccess,
+  requireRole(['owner', 'admin', 'barber']),
+  updateEstablishmentClient
+);
+router.get(
+  '/establishments/:establishmentId/promo-config',
+  verifyToken,
+  checkEstablishmentAccess,
+  requireRole(['owner', 'admin']),
+  getPromoConfig
+);
+router.put(
+  '/establishments/:establishmentId/promo-config',
+  verifyToken,
+  checkEstablishmentAccess,
+  requireRole(['owner', 'admin']),
+  updatePromoConfig
+);
+router.post(
+  '/establishments/:establishmentId/send-promo',
+  verifyToken,
+  checkEstablishmentAccess,
+  requireRole(['owner', 'admin']),
+  sendPromoCampaign
 );
 
 // WhatsApp Multi-Tenant Connection Manager Routes

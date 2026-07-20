@@ -29,7 +29,9 @@ import {
   Shield,
   Key,
   DollarSign,
-  CheckCircle
+  CheckCircle,
+  Megaphone,
+  BookOpen
 } from 'lucide-react';
 
 interface FlowNode {
@@ -125,7 +127,7 @@ export const Dashboard: React.FC = () => {
   const { user, logout, reloadUser } = useAuth();
   const { establishment, updateThemeColors } = useEstablishmentTheme();
   
-  const [activeTab, setActiveTab] = useState<'appointments' | 'chats' | 'barbers' | 'services' | 'my_services' | 'plans' | 'flowchart' | 'bot' | 'settings' | 'super_admin' | 'metrics'>(user?.role === 'admin' ? 'super_admin' : 'appointments');
+  const [activeTab, setActiveTab] = useState<'appointments' | 'chats' | 'barbers' | 'services' | 'my_services' | 'plans' | 'flowchart' | 'bot' | 'settings' | 'super_admin' | 'metrics' | 'clients'>(user?.role === 'admin' ? 'super_admin' : 'appointments');
 
   // Bot Chats States
   const [activeChats, setActiveChats] = useState<any[]>([]);
@@ -145,6 +147,22 @@ export const Dashboard: React.FC = () => {
   const [barbers, setBarbers] = useState<any[]>([]);
   const [plans, setPlans] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // CRM / Clients States
+  const [clients, setClients] = useState<any[]>([]);
+  const [loadingClients, setLoadingClients] = useState<boolean>(false);
+  const [searchClientQuery, setSearchClientQuery] = useState<string>('');
+  const [editingClient, setEditingClient] = useState<any | null>(null);
+  const [showEditClientModal, setShowEditClientModal] = useState<boolean>(false);
+  
+  // Promo Config
+  const [promoDelayMin, setPromoDelayMin] = useState<number>(10);
+  const [promoDelayMax, setPromoDelayMax] = useState<number>(20);
+  const [savingPromoConfig, setSavingPromoConfig] = useState<boolean>(false);
+  
+  // Promo Campaign
+  const [promoCampaignText, setPromoCampaignText] = useState<string>('');
+  const [sendingPromoCampaign, setSendingPromoCampaign] = useState<boolean>(false);
 
   // Filter states
   const [filterDate, setFilterDate] = useState(new Date().toISOString().split('T')[0]);
@@ -422,9 +440,102 @@ export const Dashboard: React.FC = () => {
     }
   };
 
+  const loadClients = async () => {
+    if (!user?.establishment_id) return;
+    setLoadingClients(true);
+    try {
+      const data = await apiRequest(`/establishments/${user.establishment_id}/clients`, 'GET');
+      setClients(data);
+    } catch (err: any) {
+      showToast(err.message || 'Erro ao carregar lista de contatos.', 'error');
+    } finally {
+      setLoadingClients(false);
+    }
+  };
+
+  const loadPromoConfig = async () => {
+    if (!user?.establishment_id || (user.role !== 'owner' && user.role !== 'admin')) return;
+    try {
+      const config = await apiRequest(`/establishments/${user.establishment_id}/promo-config`, 'GET');
+      setPromoDelayMin(config.promo_delay_min_seconds || 10);
+      setPromoDelayMax(config.promo_delay_max_seconds || 20);
+    } catch (err: any) {
+      console.error('Failed to load promo config:', err);
+    }
+  };
+
+  const handleUpdateClient = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user?.establishment_id || !editingClient) return;
+
+    try {
+      await apiRequest(
+        `/establishments/${user.establishment_id}/clients/${editingClient.id}`,
+        'PUT',
+        {
+          name: editingClient.name,
+          phone: editingClient.phone,
+          notes: editingClient.notes,
+          accept_promotions: editingClient.accept_promotions
+        }
+      );
+      showToast('Contato atualizado com sucesso!');
+      setShowEditClientModal(false);
+      setEditingClient(null);
+      loadClients();
+    } catch (err: any) {
+      showToast(err.message || 'Erro ao atualizar contato.', 'error');
+    }
+  };
+
+  const handleSavePromoConfig = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user?.establishment_id || (user.role !== 'owner' && user.role !== 'admin')) return;
+
+    setSavingPromoConfig(true);
+    try {
+      await apiRequest(`/establishments/${user.establishment_id}/promo-config`, 'PUT', {
+        promo_delay_min_seconds: promoDelayMin,
+        promo_delay_max_seconds: promoDelayMax
+      });
+      showToast('Configurações de disparo salvas com sucesso!');
+    } catch (err: any) {
+      showToast(err.message || 'Erro ao salvar configurações.', 'error');
+    } finally {
+      setSavingPromoConfig(false);
+    }
+  };
+
+  const handleSendPromoCampaign = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user?.establishment_id || (user.role !== 'owner' && user.role !== 'admin')) return;
+
+    if (!promoCampaignText.trim()) {
+      showToast('Digite o texto da promoção.', 'warning');
+      return;
+    }
+
+    setSendingPromoCampaign(true);
+    try {
+      const res = await apiRequest(`/establishments/${user.establishment_id}/send-promo`, 'POST', {
+        text: promoCampaignText
+      });
+      showToast(res.message || 'Campanha de promoção iniciada!');
+      setPromoCampaignText('');
+    } catch (err: any) {
+      showToast(err.message || 'Erro ao enviar campanha.', 'error');
+    } finally {
+      setSendingPromoCampaign(false);
+    }
+  };
+
   useEffect(() => {
     loadData();
     loadBotStatus();
+    if (activeTab === 'clients') {
+      loadClients();
+      loadPromoConfig();
+    }
     
     const interval = setInterval(() => {
       if (activeTab === 'bot') {
@@ -1829,6 +1940,19 @@ export const Dashboard: React.FC = () => {
               >
                 <MessageCircle size={18} />
                 <span>Conversas do Bot</span>
+              </button>
+              <button 
+                className="btn-secondary" 
+                style={{ 
+                  justifyContent: 'flex-start', 
+                  border: activeTab === 'clients' ? '1px solid var(--primary)' : '1px solid transparent',
+                  color: activeTab === 'clients' ? 'var(--primary)' : 'var(--foreground)',
+                  backgroundColor: activeTab === 'clients' ? 'rgba(212, 175, 55, 0.05)' : 'transparent'
+                }} 
+                onClick={() => setActiveTab('clients')}
+              >
+                <Users size={18} />
+                <span>Contatos & Marketing</span>
               </button>
             </>
           )}
@@ -4233,6 +4357,200 @@ export const Dashboard: React.FC = () => {
             </div>
           )}
 
+          {/* TAB: CLIENTS & CAMPAIGNS MARKETING */}
+          {activeTab === 'clients' && (
+            <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+              <div>
+                <h2 style={{ fontSize: '24px', marginBottom: '8px' }}>Gestão de Contatos & Marketing</h2>
+                <p style={{ color: 'var(--muted)', fontSize: '14px' }}>
+                  Visualize a lista telefônica de clientes cadastrados pelo bot, adicione observações de atendimento e dispare campanhas promocionais com proteção anti-ban.
+                </p>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: (user?.role === 'owner' || user?.role === 'admin') ? '2fr 1.2fr' : '1fr', gap: '24px', alignItems: 'start' }}>
+                
+                {/* Left Column: Clients Directory */}
+                <div className="card-premium" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+                    <h3 style={{ fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <BookOpen size={20} style={{ color: 'var(--primary)' }} />
+                      Lista Telefônica do Salão
+                    </h3>
+                    
+                    {/* Search Input */}
+                    <div style={{ position: 'relative', width: '100%', maxWidth: '280px' }}>
+                      <input
+                        type="text"
+                        className="form-input"
+                        placeholder="Buscar por nome ou telefone..."
+                        style={{ paddingLeft: '36px', height: '38px', fontSize: '14px' }}
+                        value={searchClientQuery}
+                        onChange={(e) => setSearchClientQuery(e.target.value)}
+                      />
+                      <Search size={16} style={{ position: 'absolute', left: '12px', top: '11px', color: 'var(--muted)' }} />
+                    </div>
+                  </div>
+
+                  {loadingClients ? (
+                    <div style={{ display: 'flex', justifyContent: 'center', padding: '40px', color: 'var(--muted)' }}>
+                      <RefreshCw size={24} className="animate-spin" />
+                    </div>
+                  ) : clients.length === 0 ? (
+                    <p style={{ color: 'var(--muted)', fontSize: '14px', textAlign: 'center', padding: '40px' }}>Nenhum contato cadastrado no momento.</p>
+                  ) : (
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+                        <thead>
+                          <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                            <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase' }}>Nome</th>
+                            <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase' }}>WhatsApp</th>
+                            <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase', textAlign: 'center' }}>Promoções</th>
+                            <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase' }}>Observações</th>
+                            <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase', textAlign: 'right' }}>Ações</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {clients
+                            .filter(c => 
+                              c.name.toLowerCase().includes(searchClientQuery.toLowerCase()) || 
+                              c.phone.includes(searchClientQuery)
+                            )
+                            .map((client) => (
+                              <tr key={client.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                                <td style={{ padding: '12px 8px', fontSize: '14px', fontWeight: '500' }}>{client.name}</td>
+                                <td style={{ padding: '12px 8px', fontSize: '14px', color: 'var(--muted)' }}>{client.phone}</td>
+                                <td style={{ padding: '12px 8px', fontSize: '14px', textAlign: 'center' }}>
+                                  <span style={{ 
+                                    padding: '2px 8px', 
+                                    borderRadius: '4px', 
+                                    fontSize: '11px', 
+                                    fontWeight: 'bold',
+                                    backgroundColor: client.accept_promotions ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+                                    color: client.accept_promotions ? '#10b981' : '#ef4444'
+                                  }}>
+                                    {client.accept_promotions ? 'Aceita' : 'Recusa'}
+                                  </span>
+                                </td>
+                                <td style={{ padding: '12px 8px', fontSize: '13px', maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--muted)' }}>
+                                  {client.notes || <em style={{ opacity: 0.5 }}>Sem anotações</em>}
+                                </td>
+                                <td style={{ padding: '12px 8px', textAlign: 'right' }}>
+                                  <button
+                                    className="btn-secondary"
+                                    style={{ padding: '6px 12px', fontSize: '13px' }}
+                                    onClick={() => {
+                                      setEditingClient({ ...client });
+                                      setShowEditClientModal(true);
+                                    }}
+                                  >
+                                    Editar
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+
+                {/* Right Column: Promotional Campaign & Anti-Ban Config (Admin/Owner only) */}
+                {(user?.role === 'owner' || user?.role === 'admin') && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+                    
+                    {/* Panel 1: Anti-Ban Delays Config */}
+                    <div className="card-premium" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                      <h3 style={{ fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <Settings size={20} style={{ color: 'var(--primary)' }} />
+                        Configurações Anti-Ban
+                      </h3>
+                      <p style={{ color: 'var(--muted)', fontSize: '13px', lineHeight: '1.4' }}>
+                        O WhatsApp bloqueia envios em lote muito rápidos. Configure um intervalo aleatório de atraso entre o envio de cada cliente para simular comportamento humano.
+                      </p>
+                      
+                      <form onSubmit={handleSavePromoConfig} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                        <div style={{ display: 'flex', gap: '16px' }}>
+                          <div style={{ flex: 1 }}>
+                            <label className="form-label" style={{ fontSize: '12px' }}>Atraso Mínimo (seg)</label>
+                            <input
+                              type="number"
+                              className="form-input"
+                              min="1"
+                              value={promoDelayMin}
+                              onChange={(e) => setPromoDelayMin(parseInt(e.target.value, 10))}
+                              required
+                            />
+                          </div>
+                          <div style={{ flex: 1 }}>
+                            <label className="form-label" style={{ fontSize: '12px' }}>Atraso Máximo (seg)</label>
+                            <input
+                              type="number"
+                              className="form-input"
+                              min={promoDelayMin}
+                              value={promoDelayMax}
+                              onChange={(e) => setPromoDelayMax(parseInt(e.target.value, 10))}
+                              required
+                            />
+                          </div>
+                        </div>
+                        
+                        <button
+                          type="submit"
+                          className="btn-primary"
+                          style={{ width: '100%', height: '42px', color: '#121212', fontWeight: 'bold' }}
+                          disabled={savingPromoConfig}
+                        >
+                          {savingPromoConfig ? 'Salvando...' : 'Salvar Configuração'}
+                        </button>
+                      </form>
+                    </div>
+
+                    {/* Panel 2: Campaign Sender Form */}
+                    <div className="card-premium" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                      <h3 style={{ fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <Megaphone size={20} style={{ color: 'var(--primary)' }} />
+                        Disparar Campanha Promocional
+                      </h3>
+                      <p style={{ color: 'var(--muted)', fontSize: '13px', lineHeight: '1.4' }}>
+                        Escreva a mensagem abaixo. Ela será enviada <strong>apenas</strong> para os contatos que aceitaram receber promoções no bot.
+                      </p>
+                      <div style={{ backgroundColor: 'rgba(212,175,55,0.05)', border: '1px solid rgba(212,175,55,0.15)', borderRadius: '6px', padding: '10px 14px', fontSize: '12px', color: 'var(--primary)' }}>
+                        💡 Use a tag <strong>{`{cliente}`}</strong> no texto para personalizar com o nome de cada pessoa automaticamente.
+                      </div>
+
+                      <form onSubmit={handleSendPromoCampaign} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                        <div>
+                          <label className="form-label">Mensagem de Disparo</label>
+                          <textarea
+                            className="form-input"
+                            rows={5}
+                            placeholder={`Ex: Olá, {cliente}! 💈\n\nNesta quarta-feira teremos uma promoção especial de corte + barba por apenas R$ 50,00! Agende seu horário respondendo este bot.`}
+                            style={{ resize: 'vertical', padding: '12px', fontSize: '14px', fontFamily: 'inherit' }}
+                            value={promoCampaignText}
+                            onChange={(e) => setPromoCampaignText(e.target.value)}
+                            required
+                          />
+                        </div>
+
+                        <button
+                          type="submit"
+                          className="btn-primary"
+                          style={{ width: '100%', height: '42px', color: '#121212', fontWeight: 'bold', gap: '8px' }}
+                          disabled={sendingPromoCampaign}
+                        >
+                          <Megaphone size={16} />
+                          {sendingPromoCampaign ? 'Disparando...' : 'Iniciar Disparo da Campanha'}
+                        </button>
+                      </form>
+                    </div>
+
+                  </div>
+                )}
+
+              </div>
+            </div>
+          )}
+
           {/* MODAL: SUPER ADMIN CHANGE PASSWORD */}
           {superChangePasswordModal && superSelectedUser && (
             <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.8)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 999, padding: '20px' }}>
@@ -4276,6 +4594,93 @@ export const Dashboard: React.FC = () => {
             </div>
           )}
 
+          {/* MODAL: EDIT CLIENT / CONTACT */}
+          {showEditClientModal && editingClient && (
+            <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.8)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 999, padding: '20px' }}>
+              <div className="glass-panel animate-fade-in" style={{ width: '100%', maxWidth: '480px', padding: '32px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+                  <h3 style={{ fontSize: '20px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <Users size={20} style={{ color: 'var(--primary)' }} />
+                    Editar Ficha de Contato
+                  </h3>
+                  <button className="btn-secondary" style={{ padding: '6px', border: 'none', color: 'var(--muted)' }} onClick={() => {
+                    setShowEditClientModal(false);
+                    setEditingClient(null);
+                  }}><X size={20} /></button>
+                </div>
+
+                <form onSubmit={handleUpdateClient} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                  <div className="form-group">
+                    <label className="form-label">Nome Completo</label>
+                    <input 
+                      type="text" 
+                      className="form-input" 
+                      value={editingClient.name} 
+                      onChange={(e) => setEditingClient({ ...editingClient, name: e.target.value })} 
+                      required 
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">WhatsApp (JID / Telefone)</label>
+                    <input 
+                      type="text" 
+                      className="form-input" 
+                      value={editingClient.phone} 
+                      onChange={(e) => setEditingClient({ ...editingClient, phone: e.target.value })} 
+                      required 
+                    />
+                  </div>
+
+                  <div className="form-group" style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <input 
+                      type="checkbox" 
+                      id="accept_promotions_checkbox"
+                      checked={editingClient.accept_promotions} 
+                      onChange={(e) => setEditingClient({ ...editingClient, accept_promotions: e.target.checked })} 
+                      style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                    />
+                    <label htmlFor="accept_promotions_checkbox" className="form-label" style={{ margin: 0, cursor: 'pointer', userSelect: 'none' }}>
+                      Aceita receber novidades e mensagens promocionais
+                    </label>
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Observações e Preferências do Cliente</label>
+                    <textarea 
+                      className="form-input" 
+                      rows={4}
+                      placeholder="Ex: Prefere corte degradê navalhado. Usa gel finalizador. Costuma vir aos sábados de manhã."
+                      value={editingClient.notes || ''} 
+                      onChange={(e) => setEditingClient({ ...editingClient, notes: e.target.value })} 
+                      style={{ resize: 'vertical', padding: '10px' }}
+                    />
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '12px', marginTop: '10px' }}>
+                    <button 
+                      type="button" 
+                      className="btn-secondary" 
+                      style={{ flex: 1 }} 
+                      onClick={() => {
+                        setShowEditClientModal(false);
+                        setEditingClient(null);
+                      }}
+                    >
+                      Cancelar
+                    </button>
+                    <button 
+                      type="submit" 
+                      className="btn-primary" 
+                      style={{ flex: 1, color: '#121212', fontWeight: 'bold' }}
+                    >
+                      Salvar Alterações
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
         </main>
       </div>
 

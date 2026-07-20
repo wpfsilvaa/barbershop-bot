@@ -11,6 +11,7 @@ const establishmentController_1 = require("./controllers/establishmentController
 const serviceController_1 = require("./controllers/serviceController");
 const bookingController_1 = require("./controllers/bookingController");
 const planController_1 = require("./controllers/planController");
+const crmController_1 = require("./controllers/crmController");
 const auth_1 = require("./middleware/auth");
 const security_1 = require("./middleware/security");
 const whatsappManager_1 = require("./services/whatsappManager");
@@ -66,6 +67,12 @@ router.post('/establishments/:establishmentId/bookings/:bookingId/complete', aut
 router.get('/establishments/:establishmentId/plans', auth_1.verifyToken, auth_1.checkEstablishmentAccess, (0, auth_1.requireRole)(['owner', 'admin']), planController_1.listPlans);
 router.post('/establishments/:establishmentId/plans', auth_1.verifyToken, auth_1.checkEstablishmentAccess, (0, auth_1.requireRole)(['owner', 'admin']), planController_1.createOrUpdatePlan);
 router.delete('/establishments/:establishmentId/plans/:planId', auth_1.verifyToken, auth_1.checkEstablishmentAccess, (0, auth_1.requireRole)(['owner', 'admin']), planController_1.deletePlan);
+// Contacts (Clients) and Promotions Marketing CRM Routes
+router.get('/establishments/:establishmentId/clients', auth_1.verifyToken, auth_1.checkEstablishmentAccess, (0, auth_1.requireRole)(['owner', 'admin', 'barber']), crmController_1.listEstablishmentClients);
+router.put('/establishments/:establishmentId/clients/:clientId', auth_1.verifyToken, auth_1.checkEstablishmentAccess, (0, auth_1.requireRole)(['owner', 'admin', 'barber']), crmController_1.updateEstablishmentClient);
+router.get('/establishments/:establishmentId/promo-config', auth_1.verifyToken, auth_1.checkEstablishmentAccess, (0, auth_1.requireRole)(['owner', 'admin']), crmController_1.getPromoConfig);
+router.put('/establishments/:establishmentId/promo-config', auth_1.verifyToken, auth_1.checkEstablishmentAccess, (0, auth_1.requireRole)(['owner', 'admin']), crmController_1.updatePromoConfig);
+router.post('/establishments/:establishmentId/send-promo', auth_1.verifyToken, auth_1.checkEstablishmentAccess, (0, auth_1.requireRole)(['owner', 'admin']), crmController_1.sendPromoCampaign);
 // WhatsApp Multi-Tenant Connection Manager Routes
 router.get('/establishments/:establishmentId/bot/status', auth_1.verifyToken, auth_1.checkEstablishmentAccess, (0, auth_1.requireRole)(['owner', 'admin']), async (req, res) => {
     const { establishmentId } = req.params;

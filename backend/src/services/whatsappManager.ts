@@ -75,12 +75,16 @@ const messageStore = new Map<string, proto.IMessage>();
 
 const BOT_SIGNATURE = '🤖 *Atendimento Automático*';
 
-// Processed messages cache and session queue locks to prevent Baileys message duplication / concurrency races
 const processedMessages = new Set<string>();
 const sessionLocks = new Map<string, Promise<any>>();
+function sanitizeMessageText(text: string): string {
+  if (!text) return '';
+  return text.replace(/\\n/g, '\n');
+}
 
 async function sendTextMessage(sock: WASocket, phone: string, text: string) {
-  const textWithSignature = `${text}\n\n${BOT_SIGNATURE}`;
+  const sanitized = sanitizeMessageText(text);
+  const textWithSignature = `${sanitized}\n\n${BOT_SIGNATURE}`;
   const sentMsg = await sock.sendMessage(phone, { text: textWithSignature });
   if (sentMsg?.key?.id && sentMsg?.message) {
     messageStore.set(sentMsg.key.id, sentMsg.message);
@@ -499,7 +503,8 @@ export async function sendOrchestratedMessage(establishmentId: string, phone: st
 
   const formattedPhone = `${cleanPhone}@s.whatsapp.net`;
   try {
-    const textWithSignature = `${text}\n\n${BOT_SIGNATURE}`;
+    const sanitized = sanitizeMessageText(text);
+    const textWithSignature = `${sanitized}\n\n${BOT_SIGNATURE}`;
     const sentMsg = await sock.sendMessage(formattedPhone, { text: textWithSignature });
     if (sentMsg?.key?.id && sentMsg?.message) {
       messageStore.set(sentMsg.key.id, sentMsg.message);
@@ -639,6 +644,80 @@ async function executeTenantBotFlowLogic(establishmentId: string, sock: WASocket
 
   try {
     const cleanPhone = phone.split('@')[0];
+
+    // Verificar se o cliente já está cadastrado no estabelecimento
+    const clientCheck = await pool.query(
+      'SELECT id, name FROM clients WHERE phone = $1 AND establishment_id = $2',
+      [cleanPhone, establishmentId]
+    );
+
+    // Fluxo de Cadastro de Primeiro Contato
+    if (session.currentNodeId === 'register_client') {
+      const clientName = text.trim();
+      if (clientName.length < 3) {
+        await sendTextMessage(sock, phone, '⚠️ O nome precisa ter pelo menos 3 caracteres. Por favor, digite seu nome completo:');
+        return;
+      }
+
+      // Inserir ou atualizar na tabela de clientes
+      await pool.query(
+        `INSERT INTO clients (establishment_id, name, phone)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (establishment_id, phone) 
+         DO UPDATE SET name = EXCLUDED.name`,
+        [establishmentId, clientName, cleanPhone]
+      );
+
+      await sendTextMessage(sock, phone, `🎉 *Cadastro realizado com sucesso, ${clientName}!* Vamos prosseguir.`);
+      
+      // Prossegue para o menu inicial do bot
+      session.state = 'ACTIVE';
+      session.currentNodeId = 'welcome';
+      session.waitingForInput = false;
+      // Permite cair no fluxo padrão de renderização do grafo abaixo
+    } else if (session.currentNodeId === 'ask_promotions') {
+      let option = parseInt(text, 10);
+      if (isNaN(option)) {
+        if (text.toLowerCase().includes('sim') || text.toLowerCase().includes('aceito') || text.toLowerCase().includes('quero')) {
+          option = 1;
+        } else if (text.toLowerCase().includes('não') || text.toLowerCase().includes('nao') || text.toLowerCase().includes('obrigado')) {
+          option = 2;
+        }
+      }
+
+      if (option !== 1 && option !== 2) {
+        await sendTextMessage(sock, phone, '⚠️ Opção inválida. Responda com *1* (Sim) ou *2* (Não):');
+        return;
+      }
+
+      const acceptPromos = (option === 1);
+      
+      // Update clients table
+      await pool.query(
+        "UPDATE clients SET accept_promotions = $1 WHERE phone = $2 AND establishment_id = $3",
+        [acceptPromos, cleanPhone, establishmentId]
+      );
+
+      if (acceptPromos) {
+        await sendTextMessage(sock, phone, '🎉 *Que ótimo!* Você foi cadastrado na nossa lista de promoções e receberá nossas novidades em primeira mão! Obrigado! 👍');
+      } else {
+        await sendTextMessage(sock, phone, 'Certo! Você não receberá mensagens de promoção. Se mudar de ideia, é só nos avisar. Obrigado! 👍');
+      }
+
+      // End flow fully
+      session.state = 'IDLE';
+      session.currentNodeId = '';
+      session.waitingForInput = false;
+      return;
+    } else if (clientCheck.rows.length === 0) {
+      // Primeiro contato! Exige cadastro de nome
+      session.state = 'ACTIVE';
+      session.currentNodeId = 'register_client';
+      session.waitingForInput = true;
+      
+      await sendTextMessage(sock, phone, `Olá! Seja bem-vindo! 💈\n\nIdentificamos que este é o seu primeiro contato conosco. Para continuarmos, *por favor digite seu nome completo*:`);
+      return;
+    }
 
     // Interceptação de múltiplos agendamentos
     if (session.currentNodeId === 'multiple_bookings_menu') {
@@ -1228,8 +1307,12 @@ async function executeTenantBotFlowLogic(establishmentId: string, sock: WASocket
               return;
             }
 
-            // End flow
-            session.state = 'IDLE';
+            // Transition to promotions subscription prompt
+            session.state = 'ACTIVE';
+            session.currentNodeId = 'ask_promotions';
+            session.waitingForInput = true;
+
+            await sendTextMessage(sock, phone, `📲 *Última pergunta:* Gostaria de receber novidades, avisos de horários e promoções exclusivas da nossa barbearia diretamente pelo WhatsApp?\n\n1️⃣ *Sim, por favor!*\n2️⃣ *Não, obrigado.*`);
             return;
           }
         }
@@ -1541,6 +1624,29 @@ export async function getActiveChats(establishmentId: string) {
     });
   }
 
+  // 3. Resolve client names from DB (clients table) to prioritize manually edited names
+  const phonesList = chatsList.map(c => c.phone);
+  if (phonesList.length > 0) {
+    try {
+      const dbClients = await pool.query(
+        "SELECT phone, name FROM clients WHERE establishment_id = $1 AND phone = ANY($2)",
+        [establishmentId, phonesList]
+      );
+      const clientNamesMap = new Map<string, string>();
+      for (const row of dbClients.rows) {
+        clientNamesMap.set(row.phone, row.name);
+      }
+      for (const chat of chatsList) {
+        const dbName = clientNamesMap.get(chat.phone);
+        if (dbName) {
+          chat.clientPushName = dbName;
+        }
+      }
+    } catch (dbErr) {
+      console.error('[getActiveChats] Failed to query client names from DB:', dbErr);
+    }
+  }
+
   return chatsList;
 }
 
@@ -1572,7 +1678,8 @@ export async function sendManualMessage(establishmentId: string, phone: string, 
   }
 
   const normalized = normalizeJid(phone);
-  const sentMsg = await sock.sendMessage(normalized, { text });
+  const sanitized = sanitizeMessageText(text);
+  const sentMsg = await sock.sendMessage(normalized, { text: sanitized });
 
   const realJid = normalizeJid(sentMsg?.key?.remoteJid || normalized);
   const session = getBotSession(realJid, establishmentId);

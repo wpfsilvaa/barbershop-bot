@@ -30,6 +30,8 @@ CREATE TABLE establishments (
     address TEXT,
     bio TEXT,
     is_active BOOLEAN DEFAULT TRUE,
+    promo_delay_min_seconds INT DEFAULT 10,
+    promo_delay_max_seconds INT DEFAULT 20,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     
     -- Customized Bot Message templates (Legacy fallback fields)
@@ -114,6 +116,8 @@ CREATE TABLE clients (
     establishment_id UUID REFERENCES establishments(id) ON DELETE CASCADE,
     name VARCHAR(255) NOT NULL,
     phone VARCHAR(50) NOT NULL,
+    notes TEXT,
+    accept_promotions BOOLEAN DEFAULT FALSE,
     auth_code VARCHAR(6),
     auth_code_expires_at TIMESTAMP,
     auth_session_id UUID,
