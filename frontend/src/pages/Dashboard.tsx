@@ -140,6 +140,7 @@ export const Dashboard: React.FC = () => {
   // Bot Chats States
   const [activeChats, setActiveChats] = useState<any[]>([]);
   const [loadingChats, setLoadingChats] = useState<boolean>(false);
+  const [chatsFilter, setChatsFilter] = useState<'active' | 'closed'>('active');
   const [selectedChat, setSelectedChat] = useState<any | null>(null);
   const [manualMessageInput, setManualMessageInput] = useState<string>('');
   const [localChatMessages, setLocalChatMessages] = useState<{ text: string; fromMe: boolean; time: string }[]>([]);
@@ -197,6 +198,7 @@ export const Dashboard: React.FC = () => {
   const [apptTime, setApptTime] = useState('');
   const [apptSlots, setApptSlots] = useState<string[]>([]);
   const [loadingSlots, setLoadingSlots] = useState(false);
+  const [showClientSuggestions, setShowClientSuggestions] = useState<boolean>(false);
 
   // Form states - Appointments (Reschedule/Update)
   const [showRescheduleModal, setShowRescheduleModal] = useState(false);
@@ -481,6 +483,18 @@ export const Dashboard: React.FC = () => {
     }
   };
 
+  const handleDeleteClient = async (clientId: string) => {
+    if (!user?.establishment_id) return;
+    if (!window.confirm('Tem certeza que deseja remover este contato da lista telefônica?')) return;
+    try {
+      await apiRequest(`/establishments/${user.establishment_id}/clients/${clientId}`, 'DELETE');
+      showToast('Contato removido com sucesso.', 'success');
+      loadClients();
+    } catch (err: any) {
+      showToast(err.message || 'Erro ao remover contato.', 'error');
+    }
+  };
+
   const loadPromoConfig = async () => {
     if (!user?.establishment_id || (user.role !== 'owner' && user.role !== 'admin')) return;
     try {
@@ -496,13 +510,22 @@ export const Dashboard: React.FC = () => {
     e.preventDefault();
     if (!user?.establishment_id || !editingClient) return;
 
+    let cleanNum = editingClient.phone.replace(/\D/g, '');
+    if (cleanNum.startsWith('55') && (cleanNum.length === 12 || cleanNum.length === 13)) {
+      cleanNum = cleanNum.substring(2);
+    }
+    if (cleanNum.length < 10 || cleanNum.length > 11) {
+      showToast('O telefone deve conter DDD + número (10 ou 11 dígitos).', 'error');
+      return;
+    }
+
     try {
       await apiRequest(
         `/establishments/${user.establishment_id}/clients/${editingClient.id}`,
         'PUT',
         {
           name: editingClient.name,
-          phone: editingClient.phone,
+          phone: `55${cleanNum}`,
           notes: editingClient.notes,
           accept_promotions: editingClient.accept_promotions
         }
@@ -524,11 +547,20 @@ export const Dashboard: React.FC = () => {
       return;
     }
 
+    let cleanNum = newClientPhone.replace(/\D/g, '');
+    if (cleanNum.startsWith('55') && (cleanNum.length === 12 || cleanNum.length === 13)) {
+      cleanNum = cleanNum.substring(2);
+    }
+    if (cleanNum.length < 10 || cleanNum.length > 11) {
+      showToast('O telefone deve conter DDD + número (10 ou 11 dígitos).', 'error');
+      return;
+    }
+
     setCreateClientLoading(true);
     try {
       await apiRequest(`/establishments/${user.establishment_id}/clients`, 'POST', {
         name: newClientName.trim(),
-        phone: newClientPhone.trim(),
+        phone: `55${cleanNum}`,
         notes: newClientNotes.trim()
       });
 
@@ -727,11 +759,20 @@ export const Dashboard: React.FC = () => {
     e.preventDefault();
     if (!user?.establishment_id) return;
 
+    let cleanNum = apptClientPhone.replace(/\D/g, '');
+    if (cleanNum.startsWith('55') && (cleanNum.length === 12 || cleanNum.length === 13)) {
+      cleanNum = cleanNum.substring(2);
+    }
+    if (cleanNum.length < 10 || cleanNum.length > 11) {
+      showToast('O telefone do cliente deve conter DDD + número (10 ou 11 dígitos).', 'error');
+      return;
+    }
+
     try {
       await apiRequest(`/establishments/${user.establishment_id}/bookings`, 'POST', {
         barber_id: apptBarber,
         client_name: apptClientName,
-        client_phone: `${apptCountryDdi}${apptClientPhone.replace(/\D/g, '')}`,
+        client_phone: `${apptCountryDdi}${cleanNum}`,
         appointment_time: apptTime,
         service_id: apptService || null
       });
@@ -1500,6 +1541,59 @@ export const Dashboard: React.FC = () => {
     }
   };
 
+  // Realtime WebSockets for Instant Messaging Sychronization
+  useEffect(() => {
+    if (!user?.establishment_id) return;
+
+    const wsUrl = window.location.protocol === 'https:'
+      ? `wss://${window.location.host}`
+      : `ws://${window.location.hostname}:5000`;
+
+    console.log(`[WS] Connecting to WebSocket: ${wsUrl}`);
+    let ws = new WebSocket(wsUrl);
+
+    const connectWS = () => {
+      ws.onopen = () => {
+        console.log('[WS] Connected to dashboard server.');
+        ws.send(JSON.stringify({
+          type: 'auth',
+          establishmentId: user.establishment_id
+        }));
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === 'chat_update') {
+            console.log('[WS] Received real-time chat update:', data);
+            fetchActiveChats();
+          }
+        } catch (e) {
+          console.error('[WS] Failed to parse message:', e);
+        }
+      };
+
+      ws.onclose = () => {
+        console.log('[WS] Connection closed. Reconnecting in 3s...');
+        setTimeout(() => {
+          ws = new WebSocket(wsUrl);
+          connectWS();
+        }, 3000);
+      };
+      
+      ws.onerror = (err) => {
+        console.error('[WS] Socket encountered error:', err);
+        ws.close();
+      };
+    };
+
+    connectWS();
+
+    return () => {
+      ws.close();
+    };
+  }, [user?.establishment_id]);
+
   const handlePauseChatBot = async (phone: string) => {
     if (!user?.establishment_id) return;
     try {
@@ -1590,7 +1684,7 @@ export const Dashboard: React.FC = () => {
     if (activeTab !== 'chats') return;
     
     fetchActiveChats();
-    const interval = setInterval(fetchActiveChats, 8000);
+    const interval = setInterval(fetchActiveChats, 30000);
     return () => clearInterval(interval);
   }, [activeTab, user?.establishment_id, selectedChat?.phone]);
 
@@ -2453,6 +2547,7 @@ export const Dashboard: React.FC = () => {
                 <button className="btn-primary" onClick={() => {
                   if (user?.role === 'barber') setApptBarber(user.id);
                   else if (barbers.length > 0) setApptBarber(barbers[0].id);
+                  loadClients();
                   setShowApptModal(true);
                 }}>
                   <Plus size={18} />
@@ -3959,22 +4054,56 @@ export const Dashboard: React.FC = () => {
               <div className={`dashboard-chats-split-container ${selectedChat ? 'chat-selected' : ''}`}>
                 {/* Left Side: Chats List */}
                 <div className="card-premium dashboard-chats-sidebar">
-                  <h3 style={{ fontSize: '16px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <MessageSquare size={16} style={{ color: 'var(--primary)' }} />
-                    Conversas em Andamento ({activeChats.length})
-                  </h3>
+                  <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.08)', marginBottom: '14px', paddingBottom: '2px', gap: '8px' }}>
+                    <button 
+                      onClick={() => setChatsFilter('active')}
+                      style={{
+                        flex: 1,
+                        background: 'none',
+                        border: 'none',
+                        color: chatsFilter === 'active' ? 'var(--primary)' : 'var(--muted)',
+                        borderBottom: chatsFilter === 'active' ? '2px solid var(--primary)' : '2px solid transparent',
+                        padding: '8px 4px',
+                        fontSize: '13px',
+                        fontWeight: chatsFilter === 'active' ? '600' : 'normal',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s'
+                      }}
+                    >
+                      Em Andamento ({activeChats.filter(c => c.state !== 'IDLE').length})
+                    </button>
+                    <button 
+                      onClick={() => setChatsFilter('closed')}
+                      style={{
+                        flex: 1,
+                        background: 'none',
+                        border: 'none',
+                        color: chatsFilter === 'closed' ? 'var(--primary)' : 'var(--muted)',
+                        borderBottom: chatsFilter === 'closed' ? '2px solid var(--primary)' : '2px solid transparent',
+                        padding: '8px 4px',
+                        fontSize: '13px',
+                        fontWeight: chatsFilter === 'closed' ? '600' : 'normal',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s'
+                      }}
+                    >
+                      Encerradas ({activeChats.filter(c => c.state === 'IDLE').length})
+                    </button>
+                  </div>
 
                   {loadingChats && activeChats.length === 0 ? (
                     <div style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', color: 'var(--muted)' }}>
                       <RefreshCw size={24} className="animate-spin" />
                     </div>
-                  ) : activeChats.length === 0 ? (
-                    <div style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', color: 'var(--muted)', textAlign: 'center', padding: '20px', fontSize: '14px' }}>
-                      Nenhuma conversa ativa no momento.
+                  ) : activeChats.filter(c => chatsFilter === 'active' ? c.state !== 'IDLE' : c.state === 'IDLE').length === 0 ? (
+                    <div style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', color: 'var(--muted)', textAlign: 'center', padding: '20px', fontSize: '13px' }}>
+                      {chatsFilter === 'active' ? 'Nenhuma conversa em andamento.' : 'Nenhuma conversa encerrada.'}
                     </div>
                   ) : (
                     <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                      {activeChats.map((chat) => (
+                      {activeChats
+                        .filter(chat => chatsFilter === 'active' ? chat.state !== 'IDLE' : chat.state === 'IDLE')
+                        .map((chat) => (
                         <div 
                           key={chat.phone} 
                           className="chat-item" 
@@ -3984,30 +4113,62 @@ export const Dashboard: React.FC = () => {
                             background: selectedChat?.phone === chat.phone ? 'rgba(212, 175, 55, 0.08)' : 'rgba(255,255,255,0.02)',
                             border: selectedChat?.phone === chat.phone ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.05)',
                             cursor: 'pointer',
-                            transition: 'all 0.2s ease-in-out'
+                            transition: 'all 0.2s ease-in-out',
+                            display: 'flex',
+                            gap: '12px',
+                            alignItems: 'center'
                           }}
                           onClick={() => {
                             setSelectedChat(chat);
                             setLocalChatMessages(chat.messages || []);
                           }}
                         >
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '6px' }}>
-                            <span style={{ fontWeight: '600', fontSize: '14px', color: 'var(--foreground)' }}>
-                              {chat.clientPushName}
-                            </span>
-                            <span style={{ 
-                              fontSize: '11px', 
-                              padding: '2px 6px', 
-                              borderRadius: '4px',
-                              fontWeight: '600',
-                              backgroundColor: chat.state === 'PAUSED' ? 'rgba(239, 68, 68, 0.1)' : chat.state === 'ACTIVE' ? 'rgba(34, 197, 94, 0.1)' : 'rgba(156, 163, 175, 0.1)',
-                              color: chat.state === 'PAUSED' ? '#ef4444' : chat.state === 'ACTIVE' ? '#22c55e' : '#9ca3af'
-                            }}>
-                              {chat.state === 'PAUSED' ? 'Pausado' : chat.state === 'ACTIVE' ? 'Bot Ativo' : 'IDLE'}
-                            </span>
+                          {/* Avatar do cliente */}
+                          <div style={{ position: 'relative', flexShrink: 0 }}>
+                            {chat.profilePictureUrl && chat.profilePictureUrl !== 'no-pic' ? (
+                              <img 
+                                src={chat.profilePictureUrl} 
+                                alt={chat.clientPushName} 
+                                style={{ width: '40px', height: '40px', borderRadius: '50%', objectFit: 'cover', border: '2px solid var(--primary)' }}
+                              />
+                            ) : (
+                              <div style={{ 
+                                width: '40px', 
+                                height: '40px', 
+                                borderRadius: '50%', 
+                                background: 'linear-gradient(135deg, var(--primary) 0%, #1e1e24 100%)', 
+                                color: '#ffffff', 
+                                display: 'flex', 
+                                alignItems: 'center', 
+                                justifyContent: 'center', 
+                                fontWeight: 'bold', 
+                                fontSize: '14px',
+                                border: '2px solid rgba(212, 175, 55, 0.2)'
+                              }}>
+                                {chat.clientPushName.substring(0, 2).toUpperCase()}
+                              </div>
+                            )}
                           </div>
-                          <div style={{ fontSize: '12px', color: 'var(--muted)' }}>
-                            {chat.phone}
+
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2px' }}>
+                              <span style={{ fontWeight: '600', fontSize: '14px', color: 'var(--foreground)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                                {chat.clientPushName}
+                              </span>
+                              <span style={{ 
+                                fontSize: '10px', 
+                                padding: '2px 6px', 
+                                borderRadius: '4px',
+                                fontWeight: '600',
+                                backgroundColor: chat.state === 'PAUSED' ? 'rgba(239, 68, 68, 0.1)' : chat.state === 'ACTIVE' ? 'rgba(34, 197, 94, 0.1)' : 'rgba(156, 163, 175, 0.1)',
+                                color: chat.state === 'PAUSED' ? '#ef4444' : chat.state === 'ACTIVE' ? '#22c55e' : '#9ca3af'
+                              }}>
+                                {chat.state === 'PAUSED' ? 'Pausado' : chat.state === 'ACTIVE' ? 'Bot' : 'IDLE'}
+                              </span>
+                            </div>
+                            <div style={{ fontSize: '12px', color: 'var(--muted)' }}>
+                              {chat.phone}
+                            </div>
                           </div>
                         </div>
                       ))}
@@ -4021,17 +4182,49 @@ export const Dashboard: React.FC = () => {
                     <div className="card-premium" style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '20px', gap: '20px', minHeight: 0 }}>
                       
                       {/* Header */}
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '16px', flexWrap: 'wrap', gap: '16px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '16px', flexWrap: 'wrap', gap: '16px' }}>
                         <div>
-                          <button 
-                            className="btn-secondary mobile-only-btn" 
-                            style={{ padding: '6px 12px', fontSize: '12px', marginBottom: '10px', display: 'none', alignItems: 'center', gap: '4px' }} 
-                            onClick={() => setSelectedChat(null)}
-                          >
-                            ← Voltar
-                          </button>
-                          <h3 style={{ fontSize: '18px', fontWeight: 'bold' }}>{selectedChat.clientPushName}</h3>
-                          <p style={{ fontSize: '13px', color: 'var(--muted)', marginTop: '2px' }}>{selectedChat.phone}</p>
+                          <div style={{ display: 'flex', gap: '14px', alignItems: 'center', marginBottom: '8px' }}>
+                            <button 
+                              className="btn-secondary mobile-only-btn" 
+                              style={{ padding: '6px 12px', fontSize: '12px', display: 'none', alignItems: 'center', gap: '4px' }} 
+                              onClick={() => setSelectedChat(null)}
+                            >
+                              ← Voltar
+                            </button>
+                            
+                            {/* Foto do perfil do cabeçalho */}
+                            {selectedChat.profilePictureUrl && selectedChat.profilePictureUrl !== 'no-pic' ? (
+                              <img 
+                                src={selectedChat.profilePictureUrl} 
+                                alt={selectedChat.clientPushName} 
+                                style={{ width: '48px', height: '48px', borderRadius: '50%', objectFit: 'cover', border: '2px solid var(--primary)', boxShadow: '0 4px 12px rgba(212, 175, 55, 0.15)' }}
+                              />
+                            ) : (
+                              <div style={{ 
+                                width: '48px', 
+                                height: '48px', 
+                                borderRadius: '50%', 
+                                background: 'linear-gradient(135deg, var(--primary) 0%, #1e1e24 100%)', 
+                                color: '#ffffff', 
+                                display: 'flex', 
+                                alignItems: 'center', 
+                                justifyContent: 'center', 
+                                fontWeight: 'bold', 
+                                fontSize: '16px',
+                                border: '2px solid rgba(212, 175, 55, 0.2)',
+                                boxShadow: '0 4px 12px rgba(0,0,0,0.2)'
+                              }}>
+                                {selectedChat.clientPushName.substring(0, 2).toUpperCase()}
+                              </div>
+                            )}
+
+                            <div>
+                              <h3 style={{ fontSize: '18px', fontWeight: 'bold', margin: 0 }}>{selectedChat.clientPushName}</h3>
+                              <p style={{ fontSize: '13px', color: 'var(--muted)', marginTop: '2px', margin: 0 }}>{selectedChat.phone}</p>
+                            </div>
+                          </div>
+
                           <div style={{ display: 'flex', gap: '12px', marginTop: '8px', fontSize: '12px', flexWrap: 'wrap' }}>
                             {selectedChat.selectedBarberName && (
                               <span style={{ background: 'rgba(255,255,255,0.04)', padding: '2px 8px', borderRadius: '4px' }}>
@@ -5306,7 +5499,35 @@ export const Dashboard: React.FC = () => {
                             )
                             .map((client) => (
                               <tr key={client.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                                <td style={{ padding: '12px 8px', fontSize: '14px', fontWeight: '500' }}>{client.name}</td>
+                                <td style={{ padding: '12px 8px', fontSize: '14px', fontWeight: '500' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                    {client.profile_picture_url && client.profile_picture_url !== 'no-pic' ? (
+                                      <img 
+                                        src={client.profile_picture_url} 
+                                        alt={client.name} 
+                                        style={{ width: '28px', height: '28px', borderRadius: '50%', objectFit: 'cover', border: '1px solid var(--primary)' }}
+                                      />
+                                    ) : (
+                                      <div style={{ 
+                                        width: '28px', 
+                                        height: '28px', 
+                                        borderRadius: '50%', 
+                                        background: 'linear-gradient(135deg, var(--primary) 0%, #1e1e24 100%)', 
+                                        color: '#ffffff', 
+                                        display: 'flex', 
+                                        alignItems: 'center', 
+                                        justify: 'center', 
+                                        fontWeight: 'bold', 
+                                        fontSize: '11px',
+                                        border: '1px solid rgba(212, 175, 55, 0.2)',
+                                        flexShrink: 0
+                                      }}>
+                                        {client.name.substring(0, 2).toUpperCase()}
+                                      </div>
+                                    )}
+                                    <span>{client.name}</span>
+                                  </div>
+                                </td>
                                 <td style={{ padding: '12px 8px', fontSize: '14px', color: 'var(--muted)' }}>{client.phone}</td>
                                 <td style={{ padding: '12px 8px', fontSize: '14px', textAlign: 'center' }}>
                                   <span style={{ 
@@ -5323,7 +5544,7 @@ export const Dashboard: React.FC = () => {
                                 <td style={{ padding: '12px 8px', fontSize: '13px', maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--muted)' }}>
                                   {client.notes || <em style={{ opacity: 0.5 }}>Sem anotações</em>}
                                 </td>
-                                <td style={{ padding: '12px 8px', textAlign: 'right' }}>
+                                <td style={{ padding: '12px 8px', textAlign: 'right', display: 'flex', gap: '8px', justifyContent: 'flex-end', alignItems: 'center' }}>
                                   <button
                                     className="btn-secondary"
                                     style={{ padding: '6px 12px', fontSize: '13px' }}
@@ -5334,6 +5555,16 @@ export const Dashboard: React.FC = () => {
                                   >
                                     Editar
                                   </button>
+                                  {(user?.role === 'owner' || user?.role === 'admin') && (
+                                    <button
+                                      className="btn-secondary"
+                                      style={{ padding: '6px', color: 'var(--error)', borderColor: 'rgba(239, 68, 68, 0.2)' }}
+                                      onClick={() => handleDeleteClient(client.id)}
+                                      title="Remover Contato"
+                                    >
+                                      <Trash2 size={15} />
+                                    </button>
+                                  )}
                                 </td>
                               </tr>
                             ))}
@@ -5852,9 +6083,101 @@ export const Dashboard: React.FC = () => {
                 </div>
               )}
 
-              <div className="form-group">
-                <label className="form-label">Nome do Cliente</label>
-                <input type="text" className="form-input" placeholder="Nome do cliente" value={apptClientName} onChange={(e) => setApptClientName(e.target.value)} required />
+              <div className="form-group" style={{ position: 'relative' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <label className="form-label">Nome do Cliente</label>
+                  <button 
+                    type="button" 
+                    style={{ background: 'none', border: 'none', color: 'var(--primary)', fontSize: '11px', cursor: 'pointer', padding: '0 0 4px 0', textDecoration: 'underline' }}
+                    onClick={() => setShowClientSuggestions(!showClientSuggestions)}
+                  >
+                    {showClientSuggestions ? 'Ocultar contatos' : '🔍 Ver contatos salvos'}
+                  </button>
+                </div>
+                <input 
+                  type="text" 
+                  className="form-input" 
+                  placeholder="Comece a digitar o nome do cliente..." 
+                  value={apptClientName} 
+                  onChange={(e) => {
+                    setApptClientName(e.target.value);
+                    if (e.target.value.trim().length > 0) {
+                      setShowClientSuggestions(true);
+                    } else {
+                      setShowClientSuggestions(false);
+                    }
+                  }} 
+                  onFocus={() => {
+                    if (clients.length > 0) {
+                      setShowClientSuggestions(true);
+                    }
+                  }}
+                  required 
+                />
+
+                {showClientSuggestions && (
+                  <div style={{
+                    position: 'absolute',
+                    top: '100%',
+                    left: 0,
+                    right: 0,
+                    backgroundColor: '#1E1E1E',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    borderRadius: '8px',
+                    maxHeight: '180px',
+                    overflowY: 'auto',
+                    zIndex: 1000,
+                    boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+                    marginTop: '4px'
+                  }}>
+                    {clients.filter(c => 
+                      c.name.toLowerCase().includes(apptClientName.toLowerCase()) || 
+                      (c.phone && c.phone.includes(apptClientName))
+                    ).length === 0 ? (
+                      <div style={{ padding: '12px', color: 'var(--muted)', fontSize: '13px', textAlign: 'center' }}>
+                        Nenhum contato salvo correspondente.
+                      </div>
+                    ) : (
+                      clients.filter(c => 
+                        c.name.toLowerCase().includes(apptClientName.toLowerCase()) || 
+                        (c.phone && c.phone.includes(apptClientName))
+                      ).map(client => (
+                        <div
+                          key={client.id || client.phone}
+                          style={{
+                            padding: '10px 14px',
+                            borderBottom: '1px solid rgba(255,255,255,0.03)',
+                            cursor: 'pointer',
+                            transition: 'background 0.2s',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '2px'
+                          }}
+                          onClick={() => {
+                            setApptClientName(client.name);
+                            const rawPhone = client.phone.replace(/\D/g, '');
+                            if (rawPhone.startsWith('55') && rawPhone.length >= 12) {
+                              setApptCountryDdi('55');
+                              setApptClientPhone(rawPhone.substring(2));
+                            } else if (rawPhone.length > 10) {
+                              setApptCountryDdi(rawPhone.substring(0, 2));
+                              setApptClientPhone(rawPhone.substring(2));
+                            } else {
+                              setApptCountryDdi('55');
+                              setApptClientPhone(rawPhone);
+                            }
+                            setShowClientSuggestions(false);
+                          }}
+                          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(212, 175, 55, 0.08)'}
+                          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                        >
+                          <span style={{ fontWeight: '600', fontSize: '13px', color: '#FFF' }}>{client.name}</span>
+                          <span style={{ fontSize: '11px', color: 'var(--muted)' }}>{client.phone}</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
               </div>
 
               <div className="form-group">

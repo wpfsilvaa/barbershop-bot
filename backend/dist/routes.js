@@ -71,6 +71,7 @@ router.delete('/establishments/:establishmentId/plans/:planId', auth_1.verifyTok
 router.get('/establishments/:establishmentId/clients', auth_1.verifyToken, auth_1.checkEstablishmentAccess, (0, auth_1.requireRole)(['owner', 'admin', 'barber']), crmController_1.listEstablishmentClients);
 router.post('/establishments/:establishmentId/clients', auth_1.verifyToken, auth_1.checkEstablishmentAccess, (0, auth_1.requireRole)(['owner', 'admin', 'barber']), crmController_1.createEstablishmentClient);
 router.put('/establishments/:establishmentId/clients/:clientId', auth_1.verifyToken, auth_1.checkEstablishmentAccess, (0, auth_1.requireRole)(['owner', 'admin', 'barber']), crmController_1.updateEstablishmentClient);
+router.delete('/establishments/:establishmentId/clients/:clientId', auth_1.verifyToken, auth_1.checkEstablishmentAccess, (0, auth_1.requireRole)(['owner', 'admin']), crmController_1.deleteEstablishmentClient);
 router.get('/establishments/:establishmentId/promo-config', auth_1.verifyToken, auth_1.checkEstablishmentAccess, (0, auth_1.requireRole)(['owner', 'admin']), crmController_1.getPromoConfig);
 router.put('/establishments/:establishmentId/promo-config', auth_1.verifyToken, auth_1.checkEstablishmentAccess, (0, auth_1.requireRole)(['owner', 'admin']), crmController_1.updatePromoConfig);
 router.post('/establishments/:establishmentId/send-promo', auth_1.verifyToken, auth_1.checkEstablishmentAccess, (0, auth_1.requireRole)(['owner', 'admin']), crmController_1.sendPromoCampaign);
@@ -195,6 +196,29 @@ router.post('/establishments/:establishmentId/bot/chats/:phone/resume', auth_1.v
         return res.status(500).json({ error: 'Internal server error.' });
     }
 });
+// Webhook to receive real-time message events from WhatsApp workers and broadcast via WebSocket
+router.post('/bot/webhook-event', async (req, res) => {
+    const { establishmentId, event, phone, pushName, state, message } = req.body || {};
+    if (!establishmentId) {
+        return res.status(400).json({ error: 'establishmentId is required.' });
+    }
+    try {
+        const { broadcastToEstablishment } = require('./services/wsServer');
+        broadcastToEstablishment(establishmentId, {
+            type: 'chat_update',
+            event,
+            phone,
+            pushName,
+            state,
+            message
+        });
+        return res.json({ status: 'OK' });
+    }
+    catch (err) {
+        console.error('[WebhookEvent] Failed to broadcast event:', err.message);
+        return res.status(500).json({ error: 'Internal server error.' });
+    }
+});
 router.post('/establishments/:establishmentId/bot/chats/:phone/message', auth_1.verifyToken, auth_1.checkEstablishmentAccess, (0, auth_1.requireRole)(['owner', 'admin', 'barber']), async (req, res) => {
     const { establishmentId, phone } = req.params;
     const { message } = req.body;
@@ -238,7 +262,7 @@ router.delete('/establishments/:establishmentId/bot/chats/:phone', auth_1.verify
                 return res.status(403).json({ error: 'Permission denied. Você só pode interagir com clientes marcados hoje com você.' });
             }
         }
-        const { message } = req.body;
+        const { message } = req.body || {};
         if (message && typeof message === 'string' && message.trim() !== '') {
             const roleLabel = req.user.role === 'owner'
                 ? 'Proprietário'

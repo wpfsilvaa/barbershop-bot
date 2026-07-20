@@ -67,9 +67,17 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
   res.status(500).json({ error: 'An unexpected error occurred on the server.' });
 });
 
+import http from 'http';
+import { initializeWebSocketServer } from './services/wsServer';
+
+const server = http.createServer(app);
+
 // Start Server
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  
+  // Initialize WebSocket server
+  initializeWebSocketServer(server);
   
   // Start WhatsApp Multitenant Sessions Orchestration
   initializeAllWhatsAppSessions().catch((err) => {

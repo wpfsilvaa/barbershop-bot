@@ -29,7 +29,8 @@ import {
   updatePromoConfig, 
   sendPromoCampaign,
   listEstablishmentFeedbacks,
-  createEstablishmentClient
+  createEstablishmentClient,
+  deleteEstablishmentClient
 } from './controllers/crmController';
 import { verifyToken, requireRole, checkEstablishmentAccess, AuthenticatedRequest } from './middleware/auth';
 import { authRateLimiter, apiRateLimiter } from './middleware/security';
@@ -275,6 +276,13 @@ router.put(
   requireRole(['owner', 'admin', 'barber']),
   updateEstablishmentClient
 );
+router.delete(
+  '/establishments/:establishmentId/clients/:clientId',
+  verifyToken,
+  checkEstablishmentAccess,
+  requireRole(['owner', 'admin']),
+  deleteEstablishmentClient
+);
 router.get(
   '/establishments/:establishmentId/promo-config',
   verifyToken,
@@ -478,6 +486,33 @@ router.post(
   }
 );
 
+// Webhook to receive real-time message events from WhatsApp workers and broadcast via WebSocket
+router.post(
+  '/bot/webhook-event',
+  async (req, res) => {
+    const { establishmentId, event, phone, pushName, state, message } = req.body || {};
+    if (!establishmentId) {
+      return res.status(400).json({ error: 'establishmentId is required.' });
+    }
+
+    try {
+      const { broadcastToEstablishment } = require('./services/wsServer');
+      broadcastToEstablishment(establishmentId, {
+        type: 'chat_update',
+        event,
+        phone,
+        pushName,
+        state,
+        message
+      });
+      return res.json({ status: 'OK' });
+    } catch (err: any) {
+      console.error('[WebhookEvent] Failed to broadcast event:', err.message);
+      return res.status(500).json({ error: 'Internal server error.' });
+    }
+  }
+);
+
 router.post(
   '/establishments/:establishmentId/bot/chats/:phone/message',
   verifyToken,
@@ -539,7 +574,7 @@ router.delete(
         }
       }
 
-      const { message } = req.body;
+      const { message } = req.body || {};
       if (message && typeof message === 'string' && message.trim() !== '') {
         const roleLabel = req.user.role === 'owner' 
           ? 'Proprietário' 

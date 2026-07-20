@@ -60,9 +60,14 @@ app.use((err, req, res, next) => {
     console.error('Unhandled server error:', err);
     res.status(500).json({ error: 'An unexpected error occurred on the server.' });
 });
+const http_1 = __importDefault(require("http"));
+const wsServer_1 = require("./services/wsServer");
+const server = http_1.default.createServer(app);
 // Start Server
-app.listen(PORT, () => {
+server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
+    // Initialize WebSocket server
+    (0, wsServer_1.initializeWebSocketServer)(server);
     // Start WhatsApp Multitenant Sessions Orchestration
     (0, whatsappManager_1.initializeAllWhatsAppSessions)().catch((err) => {
         console.error('Failed to initialize WhatsApp multitenant sessions:', err);
