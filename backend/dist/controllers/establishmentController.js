@@ -12,7 +12,7 @@ const getEstablishment = async (req, res) => {
         const result = await db_1.default.query(`SELECT id, name, slug, primary_color, secondary_color, background_color, text_color, 
               opening_time, closing_time, slot_duration_minutes, 
               msg_welcome, msg_select_barber, msg_select_date, msg_select_slot, msg_confirmed, msg_fallback,
-              bot_flow, logo_url, address, bio,
+              bot_flow, logo_url, address, bio, photos,
               created_at 
        FROM establishments 
        WHERE id = $1`, [establishmentId]);
@@ -34,7 +34,7 @@ const getEstablishmentBySlug = async (req, res) => {
         const result = await db_1.default.query(`SELECT id, name, slug, primary_color, secondary_color, background_color, text_color, 
               opening_time, closing_time, slot_duration_minutes, 
               msg_welcome, msg_select_barber, msg_select_date, msg_select_slot, msg_confirmed, msg_fallback,
-              bot_flow, logo_url, address, bio, is_active
+              bot_flow, logo_url, address, bio, photos, is_active
        FROM establishments 
        WHERE slug = $1`, [slug]);
         if (result.rows.length === 0 || !result.rows[0].is_active || result.rows[0].id === '00000000-0000-0000-0000-000000000000') {
@@ -51,7 +51,7 @@ exports.getEstablishmentBySlug = getEstablishmentBySlug;
 // Update establishment config (Owner/Admin only)
 const updateEstablishment = async (req, res) => {
     const { establishmentId } = req.params;
-    const { name, primary_color, secondary_color, background_color, text_color, opening_time, closing_time, slot_duration_minutes, msg_welcome, msg_select_barber, msg_select_date, msg_select_slot, msg_confirmed, msg_fallback, bot_flow, logo_url, address, bio } = req.body;
+    const { name, primary_color, secondary_color, background_color, text_color, opening_time, closing_time, slot_duration_minutes, msg_welcome, msg_select_barber, msg_select_date, msg_select_slot, msg_confirmed, msg_fallback, bot_flow, logo_url, address, bio, photos } = req.body;
     try {
         const result = await db_1.default.query(`UPDATE establishments 
        SET name = $1, 
@@ -71,11 +71,12 @@ const updateEstablishment = async (req, res) => {
            bot_flow = COALESCE($15::jsonb, bot_flow),
            logo_url = $16,
            address = $17,
-           bio = $18
-       WHERE id = $19
+           bio = $18,
+           photos = $19
+       WHERE id = $20
        RETURNING id, name, slug, primary_color, secondary_color, background_color, text_color, 
                  opening_time, closing_time, slot_duration_minutes,
-                 msg_welcome, msg_select_barber, msg_select_date, msg_select_slot, msg_confirmed, msg_fallback, bot_flow, logo_url, address, bio`, [
+                 msg_welcome, msg_select_barber, msg_select_date, msg_select_slot, msg_confirmed, msg_fallback, bot_flow, logo_url, address, bio, photos`, [
             name,
             primary_color,
             secondary_color,
@@ -94,6 +95,7 @@ const updateEstablishment = async (req, res) => {
             logo_url,
             address,
             bio,
+            photos || [],
             establishmentId
         ]);
         if (result.rows.length === 0) {

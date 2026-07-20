@@ -46,8 +46,8 @@ app.use(
   })
 );
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
 // Custom Security Middlewares (XSS Prevention & CSRF Double Submit Validation)
 app.use(xssSanitizer);

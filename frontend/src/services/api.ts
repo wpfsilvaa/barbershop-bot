@@ -38,10 +38,24 @@ export const apiRequest = async (
     const response = await fetch(`${API_BASE}${endpoint}`, config);
 
     if (response.status === 401 || response.status === 403) {
-      // Auto logout on authentication failure (expired token)
-      setAuthToken(null);
-      if (!window.location.pathname.includes('/login') && !window.location.pathname.includes('/register-owner')) {
-        window.location.href = '/login';
+      // Clone response to inspect body without consuming it
+      const responseClone = response.clone();
+      const bodyData = await responseClone.json().catch(() => ({}));
+      const isLicenseBlock = bodyData.error && (bodyData.error.includes('expirado') || bodyData.error.includes('revogado'));
+
+      if (!isLicenseBlock) {
+        // Auto logout on authentication failure (expired token)
+        setAuthToken(null);
+        if (!window.location.pathname.includes('/login') && !window.location.pathname.includes('/register-owner')) {
+          window.location.href = '/login';
+        }
+      } else {
+        // Force page reload, which will boot AuthProvider and trigger show the block screen via /auth/me
+        if (!window.location.pathname.includes('/login') && !window.location.pathname.includes('/register-owner')) {
+          window.location.reload();
+          // Stop execution to prevent component logic errors
+          return new Promise(() => {}); 
+        }
       }
     }
 

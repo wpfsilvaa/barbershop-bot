@@ -268,6 +268,7 @@ router.post('/admin/whatsapp-sessions/:establishmentId/logout', auth_1.verifyTok
 // Super Admin Establishment Commission configuration
 router.put('/admin/establishments/:establishmentId/commission', auth_1.verifyToken, (0, auth_1.requireRole)(['admin']), adminController_1.updateEstablishmentCommission);
 router.put('/admin/establishments/:establishmentId/status', auth_1.verifyToken, (0, auth_1.requireRole)(['admin']), adminController_1.updateEstablishmentStatus);
+router.put('/admin/establishments/:establishmentId/license', auth_1.verifyToken, (0, auth_1.requireRole)(['admin']), adminController_1.updateEstablishmentLicense);
 // Establishment Metrics (Owner, Admin or Barber)
 router.get('/establishments/:establishmentId/metrics', auth_1.verifyToken, auth_1.checkEstablishmentAccess, adminController_1.getEstablishmentMetrics);
 // Global metrics for Super Admin

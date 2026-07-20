@@ -27,14 +27,29 @@ const login = async (req, res) => {
     }
     try {
         // Parameterized SQL query to prevent SQL Injection, joining establishments to get the slug
-        const result = await db_1.default.query(`SELECT u.*, e.slug as establishment_slug 
+        const result = await db_1.default.query(`SELECT u.*, e.slug as establishment_slug, e.is_active as establishment_active,
+              e.expires_at as establishment_expires_at 
        FROM users u 
        LEFT JOIN establishments e ON u.establishment_id = e.id 
-       WHERE u.email = $1 AND u.is_active = true`, [email]);
+       WHERE u.email = $1`, [email]);
         if (result.rows.length === 0) {
             return res.status(401).json({ error: 'Invalid email or password.' });
         }
         const user = result.rows[0];
+        if (!user.is_active) {
+            return res.status(403).json({ error: 'Acesso revogado. Entre em contato com o administrador.' });
+        }
+        if (user.establishment_id) {
+            if (user.establishment_active === false) {
+                return res.status(403).json({ error: 'Acesso revogado. O estabelecimento associado está suspenso.' });
+            }
+            if (user.establishment_expires_at) {
+                const expiresAt = new Date(user.establishment_expires_at);
+                if (expiresAt < new Date()) {
+                    return res.status(403).json({ error: 'Acesso expirado. Seu período de testes ou assinatura chegou ao fim.' });
+                }
+            }
+        }
         const passwordMatch = await bcryptjs_1.default.compare(password, user.password_hash);
         if (!passwordMatch) {
             return res.status(401).json({ error: 'Invalid email or password.' });
@@ -57,6 +72,7 @@ const login = async (req, res) => {
                 establishment_id: user.establishment_id,
                 establishment_slug: user.establishment_slug,
                 requirePasswordChange: user.require_password_change,
+                establishment_expires_at: user.establishment_expires_at,
             },
         });
     }
@@ -72,14 +88,31 @@ const getMe = async (req, res) => {
         return res.status(401).json({ error: 'Unauthorized.' });
     }
     try {
-        const result = await db_1.default.query(`SELECT u.id, u.name, u.email, u.role, u.establishment_id, u.is_active, e.slug as establishment_slug 
+        const result = await db_1.default.query(`SELECT u.id, u.name, u.email, u.role, u.establishment_id, u.is_active, 
+              e.slug as establishment_slug, e.is_active as establishment_active,
+              e.expires_at as establishment_expires_at 
        FROM users u 
-       JOIN establishments e ON u.establishment_id = e.id 
+       LEFT JOIN establishments e ON u.establishment_id = e.id 
        WHERE u.id = $1`, [req.user.id]);
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'User not found.' });
         }
-        return res.json(result.rows[0]);
+        const user = result.rows[0];
+        if (!user.is_active) {
+            return res.status(403).json({ error: 'Acesso revogado. Entre em contato com o administrador.' });
+        }
+        if (user.establishment_id) {
+            if (user.establishment_active === false) {
+                return res.status(403).json({ error: 'Acesso revogado. O estabelecimento associado está suspenso.' });
+            }
+            if (user.establishment_expires_at) {
+                const expiresAt = new Date(user.establishment_expires_at);
+                if (expiresAt < new Date()) {
+                    return res.status(403).json({ error: 'Acesso expirado. Seu período de testes ou assinatura chegou ao fim.' });
+                }
+            }
+        }
+        return res.json(user);
     }
     catch (error) {
         console.error('GetMe error:', error);

@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.updateEstablishmentStatus = exports.updateEstablishmentCommission = exports.getGlobalMetrics = exports.getEstablishmentMetrics = exports.logoutWhatsAppSession = exports.listWhatsAppSessions = exports.changeUserPassword = exports.listAllUsers = void 0;
+exports.updateEstablishmentLicense = exports.updateEstablishmentStatus = exports.updateEstablishmentCommission = exports.getGlobalMetrics = exports.getEstablishmentMetrics = exports.logoutWhatsAppSession = exports.listWhatsAppSessions = exports.changeUserPassword = exports.listAllUsers = void 0;
 const db_1 = __importDefault(require("../config/db"));
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const whatsappManager_1 = require("../services/whatsappManager");
@@ -51,7 +51,7 @@ exports.changeUserPassword = changeUserPassword;
 const listWhatsAppSessions = async (req, res) => {
     try {
         // 1. Fetch all establishments
-        const establishmentsRes = await db_1.default.query('SELECT id, name, logo_url, commission_percent, is_active FROM establishments');
+        const establishmentsRes = await db_1.default.query('SELECT id, name, logo_url, commission_percent, is_active, expires_at FROM establishments');
         // 2. Fetch all persistent WhatsApp sessions from database
         const sessionsRes = await db_1.default.query('SELECT establishment_id, status, phone FROM whatsapp_sessions');
         const sessionsPayload = establishmentsRes.rows.map((est) => {
@@ -67,6 +67,7 @@ const listWhatsAppSessions = async (req, res) => {
                 logo_url: est.logo_url,
                 commission_percent: est.commission_percent,
                 is_active: est.is_active,
+                expires_at: est.expires_at,
                 status: status,
                 phone: sessionDb ? sessionDb.phone : null
             };
@@ -103,7 +104,7 @@ const getEstablishmentMetrics = async (req, res) => {
         const dateLimitStr = dateLimit.toISOString().split('T')[0];
         // Get establishment commission_percent
         const estRes = await db_1.default.query('SELECT commission_percent FROM establishments WHERE id = $1', [establishmentId]);
-        const commissionPercent = estRes.rows.length > 0 ? estRes.rows[0].commission_percent : 50;
+        const commissionPercent = estRes.rows.length > 0 && estRes.rows[0].commission_percent !== null ? estRes.rows[0].commission_percent : 0;
         // 1. General totals
         const totalsRes = await db_1.default.query(`SELECT 
          COALESCE(SUM(CASE WHEN a.status = 'completed' THEN COALESCE(bs.price, s.price) ELSE 0 END), 0) as total_revenue,
@@ -223,11 +224,11 @@ const getGlobalMetrics = async (req, res) => {
          COALESCE(SUM(CASE WHEN a.status = 'completed' THEN COALESCE(bs.price, s.price) ELSE 0 END), 0) as total_revenue,
          COALESCE(SUM(CASE WHEN a.status = 'confirmed' THEN COALESCE(bs.price, s.price) ELSE 0 END), 0) as pending_revenue
        FROM establishments e
-       LEFT JOIN appointments a ON e.id = a.establishment_id AND a.status IN ('confirmed', 'completed') AND a.appointment_time >= $2
+       LEFT JOIN appointments a ON e.id = a.establishment_id AND a.status IN ('confirmed', 'completed') AND a.appointment_time >= $1
        LEFT JOIN services s ON a.service_id = s.id
        LEFT JOIN barber_services bs ON a.service_id = bs.service_id AND bs.barber_id = a.barber_id
        GROUP BY e.id, e.name, e.logo_url, e.commission_percent
-       ORDER BY total_revenue DESC`, [dateLimitStr, dateLimitStr]);
+       ORDER BY total_revenue DESC`, [dateLimitStr]);
         // 3. Distribution of Services (top selling concluídos)
         const servicesDistributionRes = await db_1.default.query(`SELECT 
          s.id as service_id, 
@@ -264,7 +265,7 @@ const getGlobalMetrics = async (req, res) => {
                 total_bookings: parseInt(r.total_bookings, 10),
                 total_revenue: parseFloat(r.total_revenue),
                 pending_revenue: parseFloat(r.pending_revenue),
-                commission_percent: parseInt(r.commission_percent, 10) || 50
+                commission_percent: r.commission_percent !== null && r.commission_percent !== undefined ? parseInt(r.commission_percent, 10) : 0
             })),
             services_distribution: servicesDistributionRes.rows.map(r => ({
                 ...r,
@@ -331,3 +332,45 @@ const updateEstablishmentStatus = async (req, res) => {
     }
 };
 exports.updateEstablishmentStatus = updateEstablishmentStatus;
+// 9. Update establishment license expiration date (Super Admin Only)
+const updateEstablishmentLicense = async (req, res) => {
+    const { establishmentId } = req.params;
+    const { expires_at, add_days } = req.body;
+    try {
+        let finalExpiresAt;
+        if (add_days !== undefined) {
+            const parsedDays = parseInt(add_days, 10);
+            if (isNaN(parsedDays)) {
+                return res.status(400).json({ error: 'Days to add must be a valid number.' });
+            }
+            // Buscar expiração atual
+            const estRes = await db_1.default.query('SELECT expires_at FROM establishments WHERE id = $1', [establishmentId]);
+            if (estRes.rows.length === 0) {
+                return res.status(404).json({ error: 'Establishment not found.' });
+            }
+            // Se já estiver expirado, adiciona a partir de NOW(), caso contrário a partir da expiração atual!
+            const currentExpiresAt = estRes.rows[0].expires_at ? new Date(estRes.rows[0].expires_at) : new Date();
+            const baseDate = currentExpiresAt < new Date() ? new Date() : currentExpiresAt;
+            finalExpiresAt = new Date(baseDate.getTime() + parsedDays * 24 * 60 * 60 * 1000);
+        }
+        else if (expires_at !== undefined) {
+            finalExpiresAt = new Date(expires_at);
+            if (isNaN(finalExpiresAt.getTime())) {
+                return res.status(400).json({ error: 'Invalid expiration date.' });
+            }
+        }
+        else {
+            return res.status(400).json({ error: 'Either expires_at or add_days must be provided.' });
+        }
+        const result = await db_1.default.query('UPDATE establishments SET expires_at = $1 WHERE id = $2 RETURNING id, name, expires_at', [finalExpiresAt, establishmentId]);
+        return res.json({
+            message: 'License expiration updated successfully.',
+            establishment: result.rows[0]
+        });
+    }
+    catch (error) {
+        console.error('Update establishment license error:', error);
+        return res.status(500).json({ error: 'Internal server error.' });
+    }
+};
+exports.updateEstablishmentLicense = updateEstablishmentLicense;

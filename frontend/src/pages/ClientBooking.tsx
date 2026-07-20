@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { 
   User, 
@@ -11,7 +11,9 @@ import {
   Scissors,
   Check,
   MapPin,
-  FileText
+  FileText,
+  ChevronRight,
+  X
 } from 'lucide-react';
 
 interface EstablishmentInfo {
@@ -26,6 +28,7 @@ interface EstablishmentInfo {
   logo_url?: string;
   address?: string;
   bio?: string;
+  photos?: string[];
 }
 
 interface BarberInfo {
@@ -48,6 +51,8 @@ export const ClientBooking: React.FC = () => {
   
   // States
   const [est, setEst] = useState<EstablishmentInfo | null>(null);
+  const [currentPhotoIdx, setCurrentPhotoIdx] = useState<number>(0);
+  const [expandedPhoto, setExpandedPhoto] = useState<string | null>(null);
   const [barbers, setBarbers] = useState<BarberInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -69,6 +74,31 @@ export const ClientBooking: React.FC = () => {
   const [loadingServices, setLoadingServices] = useState(false);
   const [bookingSuccess, setBookingSuccess] = useState(false);
   const [bookingLoading, setBookingLoading] = useState(false);
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const handleScroll = (direction: 'left' | 'right') => {
+    if (scrollRef.current) {
+      const { scrollLeft, clientWidth, scrollWidth } = scrollRef.current;
+      const scrollAmount = clientWidth * 0.75;
+      
+      let scrollTo = 0;
+      if (direction === 'right') {
+        if (scrollLeft + clientWidth >= scrollWidth - 20) {
+          scrollTo = 0;
+        } else {
+          scrollTo = scrollLeft + scrollAmount;
+        }
+      } else {
+        if (scrollLeft <= 20) {
+          scrollTo = scrollWidth - clientWidth;
+        } else {
+          scrollTo = scrollLeft - scrollAmount;
+        }
+      }
+      
+      scrollRef.current.scrollTo({ left: scrollTo, behavior: 'smooth' });
+    }
+  };
 
   // Load Establishment Dynamic Theme & Styles
   useEffect(() => {
@@ -358,6 +388,71 @@ export const ClientBooking: React.FC = () => {
         {/* STEP 1: SELECT BARBER */}
         {currentStep === 1 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+            
+            {/* Carrossel de fotos da barbearia */}
+            {est && est.photos && est.photos.length > 0 && (
+              <div style={{ position: 'relative', width: '100%', marginBottom: '6px' }}>
+                {/* Setas de navegação flutuantes */}
+                {est.photos.length > 3 && (
+                  <>
+                    <button
+                      type="button"
+                      style={{ position: 'absolute', left: '-10px', top: '50%', transform: 'translateY(-50%)', background: 'rgba(0,0,0,0.8)', color: primaryColor, border: '1px solid rgba(255,255,255,0.1)', borderRadius: '50%', width: '32px', height: '32px', display: 'flex', justifyContent: 'center', alignItems: 'center', cursor: 'pointer', zIndex: 10, boxShadow: '0 4px 10px rgba(0,0,0,0.5)' }}
+                      onClick={() => handleScroll('left')}
+                    >
+                      <ChevronRight size={18} style={{ transform: 'rotate(180deg)' }} />
+                    </button>
+                    <button
+                      type="button"
+                      style={{ position: 'absolute', right: '-10px', top: '50%', transform: 'translateY(-50%)', background: 'rgba(0,0,0,0.8)', color: primaryColor, border: '1px solid rgba(255,255,255,0.1)', borderRadius: '50%', width: '32px', height: '32px', display: 'flex', justifyContent: 'center', alignItems: 'center', cursor: 'pointer', zIndex: 10, boxShadow: '0 4px 10px rgba(0,0,0,0.5)' }}
+                      onClick={() => handleScroll('right')}
+                    >
+                      <ChevronRight size={18} />
+                    </button>
+                  </>
+                )}
+                
+                {/* Container horizontal com scroll suave */}
+                <div 
+                  ref={scrollRef}
+                  style={{ 
+                    display: 'flex', 
+                    gap: '12px', 
+                    overflowX: 'auto', 
+                    scrollBehavior: 'smooth', 
+                    padding: '2px 0',
+                    scrollbarWidth: 'none',
+                    msOverflowStyle: 'none'
+                  }}
+                  className="hide-scrollbar"
+                >
+                  {est.photos.map((photo, idx) => (
+                    <div 
+                      key={idx} 
+                      style={{ 
+                        flex: '0 0 calc(33.333% - 8px)', 
+                        minWidth: '110px', 
+                        height: '90px', 
+                        borderRadius: '8px', 
+                        overflow: 'hidden', 
+                        border: '1px solid rgba(255,255,255,0.06)' 
+                      }}
+                    >
+                      <img 
+                        src={photo} 
+                        alt={`Foto local ${idx + 1}`} 
+                        style={{ width: '100%', height: '100%', objectFit: 'cover', cursor: 'pointer' }} 
+                        onClick={() => setExpandedPhoto(photo)}
+                        onError={(e) => {
+                          e.currentTarget.src = 'https://images.unsplash.com/photo-1503951914875-452162b0f3f1?q=80&w=300';
+                        }}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <h2 style={{ fontSize: '18px', fontWeight: '600' }}>Escolha o Profissional</h2>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               {barbers.map((barber) => (
@@ -421,6 +516,7 @@ export const ClientBooking: React.FC = () => {
                   <MapPin size={14} />
                   <span><strong>Localização:</strong> {est.address}</span>
                 </div>
+
                 <div style={{ width: '100%', height: '150px', borderRadius: '8px', overflow: 'hidden' }}>
                   <iframe 
                     width="100%" 
@@ -906,6 +1002,67 @@ export const ClientBooking: React.FC = () => {
         )}
 
       </main>
+
+      {/* LIGHTBOX: FOTO EXPANDIDA */}
+      {expandedPhoto && (
+        <div 
+          style={{ 
+            position: 'fixed', 
+            top: 0, 
+            left: 0, 
+            right: 0, 
+            bottom: 0, 
+            backgroundColor: 'rgba(0,0,0,0.95)', 
+            display: 'flex', 
+            justifyContent: 'center', 
+            alignItems: 'center', 
+            zIndex: 99999, 
+            padding: '20px',
+            cursor: 'zoom-out'
+          }}
+          onClick={() => setExpandedPhoto(null)}
+        >
+          <button
+            type="button"
+            style={{ 
+              position: 'absolute', 
+              top: '20px', 
+              right: '20px', 
+              background: 'rgba(255,255,255,0.1)', 
+              color: '#ffffff', 
+              border: 'none', 
+              borderRadius: '50%', 
+              width: '40px', 
+              height: '40px', 
+              display: 'flex', 
+              justifyContent: 'center', 
+              alignItems: 'center', 
+              cursor: 'pointer',
+              zIndex: 100000
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+              setExpandedPhoto(null);
+            }}
+          >
+            <X size={24} />
+          </button>
+          
+          <img 
+            src={expandedPhoto} 
+            alt="Local do Salão Expandido" 
+            style={{ 
+              maxWidth: '90%', 
+              maxHeight: '85%', 
+              objectFit: 'contain', 
+              borderRadius: '8px', 
+              boxShadow: '0 10px 30px rgba(0,0,0,0.8)',
+              cursor: 'default'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
 
       {/* Footer */}
       <footer style={{ 

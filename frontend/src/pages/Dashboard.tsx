@@ -267,6 +267,8 @@ export const Dashboard: React.FC = () => {
   const [logoUrl, setLogoUrl] = useState('');
   const [shopAddress, setShopAddress] = useState('');
   const [shopBio, setShopBio] = useState('');
+  const [shopPhotos, setShopPhotos] = useState<string[]>([]);
+  const [newPhotoUrl, setNewPhotoUrl] = useState<string>('');
 
   // Form states - Services CRUD & Assignment
   const [services, setServices] = useState<any[]>([]);
@@ -581,6 +583,7 @@ export const Dashboard: React.FC = () => {
       setLogoUrl(establishment.logo_url || '');
       setShopAddress(establishment.address || '');
       setShopBio(establishment.bio || '');
+      setShopPhotos(establishment.photos || []);
       
       // Legacy messages
       setMsgWelcome(establishment.msg_welcome || '');
@@ -616,6 +619,19 @@ export const Dashboard: React.FC = () => {
     };
     fetchSlots();
   }, [apptBarber, filterDate, user?.establishment_id]);
+
+  useEffect(() => {
+    if (user?.role === 'admin') {
+      document.documentElement.style.setProperty('--primary', '#d4af37');
+      document.documentElement.style.setProperty('--primary-hover', '#bfa030');
+      document.documentElement.style.setProperty('--secondary', '#1a1a1e');
+      document.documentElement.style.setProperty('--background', '#121212');
+      document.documentElement.style.setProperty('--card', '#1e1e1e');
+      document.documentElement.style.setProperty('--foreground', '#f5f5f5');
+      document.documentElement.style.setProperty('--input-bg', '#262626');
+      document.documentElement.style.setProperty('--input-border', '#3d3d3d');
+    }
+  }, [user]);
 
   useEffect(() => {
     if (activeTab === 'super_admin') {
@@ -720,6 +736,36 @@ export const Dashboard: React.FC = () => {
       setSuperSessions(sessionsData);
     } catch (err: any) {
       showToast(err.message || 'Erro ao desconectar sessão.', 'error');
+    }
+  };
+
+  // Update License Expiration Days
+  const handleUpdateLicenseDays = async (establishmentId: string, days: number) => {
+    try {
+      await apiRequest(`/admin/establishments/${establishmentId}/license`, 'PUT', {
+        add_days: days
+      });
+      showToast(`Licença estendida em +${days} dias!`);
+      loadSuperAdminData();
+    } catch (err: any) {
+      showToast(err.message || 'Erro ao atualizar licença.', 'error');
+    }
+  };
+
+  // Expire License immediately
+  const handleExpireLicense = async (establishmentId: string) => {
+    if (!window.confirm('Expirar a licença deste estabelecimento imediatamente? Isso irá bloquear seu acesso.')) return;
+    try {
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      
+      await apiRequest(`/admin/establishments/${establishmentId}/license`, 'PUT', {
+        expires_at: yesterday.toISOString()
+      });
+      showToast('Licença expirada com sucesso!');
+      loadSuperAdminData();
+    } catch (err: any) {
+      showToast(err.message || 'Erro ao expirar licença.', 'error');
     }
   };
 
@@ -1073,7 +1119,8 @@ export const Dashboard: React.FC = () => {
         bot_flow: botFlow,
         logo_url: logoUrl,
         address: shopAddress,
-        bio: shopBio
+        bio: shopBio,
+        photos: shopPhotos
       });
 
       updateThemeColors(updated);
@@ -1908,12 +1955,70 @@ export const Dashboard: React.FC = () => {
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <Scissors style={{ color: 'var(--primary)' }} size={24} />
           <div>
-            <h1 style={{ fontSize: '20px', lineHeight: '1.2' }}>{establishment?.name || 'Painel de Gestão'}</h1>
-            <span style={{ fontSize: '12px', color: 'var(--muted)' }}>Barbearia Clássica Booking</span>
+            <h1 style={{ fontSize: '20px', lineHeight: '1.2' }}>
+              {user?.role === 'admin' ? 'BarberHub' : (establishment?.name || 'Painel de Gestão')}
+            </h1>
+            <span style={{ fontSize: '12px', color: 'var(--muted)' }}>
+              {user?.role === 'admin' ? 'Painel de Controle Global' : 'Barbearia Clássica Booking'}
+            </span>
           </div>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
+          {user?.role !== 'admin' && user?.establishment_expires_at && (() => {
+            const expiresAt = new Date(user.establishment_expires_at);
+            const diffTime = expiresAt.getTime() - new Date().getTime();
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+            
+            let color = '#10b981'; // Verde padrão (> 15 dias)
+            let isPulsing = false;
+            let label = `${diffDays} dias restantes`;
+
+            if (diffDays <= 3) {
+              color = '#ef4444'; // Vermelho
+              isPulsing = true;
+              label = `Licença expira em ${diffDays} ${diffDays === 1 ? 'dia' : 'dias'}!`;
+            } else if (diffDays <= 15) {
+              color = '#e2a857'; // Amarelo/Dourado
+              label = `${diffDays} dias restantes`;
+            }
+
+            return (
+              <div style={{ 
+                display: 'flex', 
+                alignItems: 'center', 
+                gap: '8px', 
+                padding: '6px 12px', 
+                background: 'rgba(255, 255, 255, 0.03)', 
+                borderRadius: '20px', 
+                border: '1px solid rgba(255, 255, 255, 0.05)',
+                fontSize: '13px'
+              }}>
+                <span 
+                  style={{ 
+                    width: '8px', 
+                    height: '8px', 
+                    borderRadius: '50%', 
+                    background: color, 
+                    display: 'inline-block',
+                    boxShadow: isPulsing ? `0 0 10px ${color}` : 'none',
+                    animation: isPulsing ? 'pulse-red 1.2s infinite ease-in-out' : 'none'
+                  }} 
+                />
+                <span style={{ color: color, fontWeight: '500' }}>{label}</span>
+                {isPulsing && (
+                  <style>{`
+                    @keyframes pulse-red {
+                      0% { opacity: 0.3; transform: scale(0.9); }
+                      50% { opacity: 1; transform: scale(1.2); }
+                      100% { opacity: 0.3; transform: scale(0.9); }
+                    }
+                  `}</style>
+                )}
+              </div>
+            );
+          })()}
+
           <div style={{ textAlign: 'right' }}>
             <p style={{ fontWeight: '500', fontSize: '15px' }}>{user?.name}</p>
             <div style={{ marginTop: '2px' }}>{getRoleBadge(user?.role || '')}</div>
@@ -3716,6 +3821,76 @@ export const Dashboard: React.FC = () => {
                   </div>
                 </div>
 
+                {/* Galeria de Fotos */}
+                <div className="card-premium">
+                  <h3 style={{ fontSize: '18px', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <Palette size={18} style={{ color: 'var(--primary)' }} />
+                    Fotos da Barbearia (Galeria / Carrossel)
+                  </h3>
+                  <p style={{ color: 'var(--muted)', fontSize: '13px', marginBottom: '16px', lineHeight: '1.4' }}>
+                    Selecione arquivos de imagens do seu salão (fachada, cadeiras, recepção). Elas serão convertidas e salvas diretamente no banco de dados para o carrossel dos clientes.
+                  </p>
+
+                  <div className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <label className="form-label" style={{ fontSize: '12px', color: 'var(--muted)' }}>Adicionar Nova Foto (PNG/JPG - Máx. 800KB)</label>
+                    <input 
+                      type="file" 
+                      accept="image/*"
+                      className="form-input"
+                      style={{ padding: '8px', cursor: 'pointer' }}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          if (file.size > 800 * 1024) {
+                            showToast('A imagem deve ter no máximo 800KB para evitar sobrecarga no banco.', 'error');
+                            return;
+                          }
+                          const reader = new FileReader();
+                          reader.onloadend = () => {
+                            const base64String = reader.result as string;
+                            setShopPhotos([...shopPhotos, base64String]);
+                            showToast('Imagem carregada com sucesso! Lembre-se de clicar em "Salvar Alterações" no final da página.');
+                          };
+                          reader.readAsDataURL(file);
+                        }
+                        e.target.value = ''; // Reset input to allow selecting same file again
+                      }}
+                    />
+                  </div>
+
+                  {shopPhotos.length === 0 ? (
+                    <p style={{ color: 'var(--muted)', fontSize: '13px', fontStyle: 'italic', textAlign: 'center', padding: '20px' }}>
+                      Nenhuma imagem cadastrada. Adicione links de imagens acima.
+                    </p>
+                  ) : (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '16px', marginTop: '16px' }}>
+                      {shopPhotos.map((photo, index) => (
+                        <div key={index} style={{ position: 'relative', borderRadius: '8px', overflow: 'hidden', height: '100px', border: '1px solid rgba(255,255,255,0.08)' }}>
+                          <img 
+                            src={photo} 
+                            alt={`Salão ${index + 1}`} 
+                            style={{ width: '100%', height: '100%', objectFit: 'cover' }} 
+                            onError={(e) => {
+                              e.currentTarget.src = 'https://images.unsplash.com/photo-1503951914875-452162b0f3f1?q=80&w=200'; // fallback
+                            }}
+                          />
+                          <button
+                            type="button"
+                            style={{ position: 'absolute', top: '4px', right: '4px', background: 'rgba(239, 68, 68, 0.9)', color: '#ffffff', border: 'none', borderRadius: '4px', padding: '4px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                            onClick={() => {
+                              const updatedPhotos = shopPhotos.filter((_, idx) => idx !== index);
+                              setShopPhotos(updatedPhotos);
+                              showToast('Foto removida. Lembre-se de salvar as alterações.');
+                            }}
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
                 <button type="submit" className="btn-primary" style={{ alignSelf: 'flex-end' }}>
                   <span>Salvar Alterações</span>
                 </button>
@@ -3912,6 +4087,50 @@ export const Dashboard: React.FC = () => {
                                   {session.status === 'CONNECTED' ? `Conectado (${session.phone || 'Sem número'})` : 'Desconectado'}
                                 </span>
                               </div>
+
+                              {session.establishment_id !== '00000000-0000-0000-0000-000000000000' && session.expires_at && (() => {
+                                const expiresAt = new Date(session.expires_at);
+                                const isExpired = expiresAt < new Date();
+                                const diffTime = expiresAt.getTime() - new Date().getTime();
+                                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                                
+                                return (
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '6px' }}>
+                                    <div style={{ fontSize: '11px', color: isExpired ? '#ef4444' : 'rgba(255,255,255,0.6)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                      <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: isExpired ? '#ef4444' : '#10b981' }} />
+                                      <span>
+                                        {isExpired 
+                                          ? `Licença Expirada (${expiresAt.toLocaleDateString('pt-BR')})` 
+                                          : `Licença ativa: ${diffDays} dias (${expiresAt.toLocaleDateString('pt-BR')})`
+                                        }
+                                      </span>
+                                    </div>
+                                    <div style={{ display: 'flex', gap: '6px', marginTop: '2px' }}>
+                                      <button 
+                                        type="button" 
+                                        style={{ padding: '2px 6px', fontSize: '9px', borderRadius: '4px', background: 'rgba(255,255,255,0.05)', color: 'var(--primary)', border: '1px solid rgba(212,175,55,0.2)', cursor: 'pointer' }}
+                                        onClick={() => handleUpdateLicenseDays(session.establishment_id, 7)}
+                                      >
+                                        +7d
+                                      </button>
+                                      <button 
+                                        type="button" 
+                                        style={{ padding: '2px 6px', fontSize: '9px', borderRadius: '4px', background: 'rgba(255,255,255,0.05)', color: 'var(--primary)', border: '1px solid rgba(212,175,55,0.2)', cursor: 'pointer' }}
+                                        onClick={() => handleUpdateLicenseDays(session.establishment_id, 30)}
+                                      >
+                                        +30d
+                                      </button>
+                                      <button 
+                                        type="button" 
+                                        style={{ padding: '2px 6px', fontSize: '9px', borderRadius: '4px', background: 'rgba(239,68,68,0.05)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.2)', cursor: 'pointer' }}
+                                        onClick={() => handleExpireLicense(session.establishment_id)}
+                                      >
+                                        Expirar
+                                      </button>
+                                    </div>
+                                  </div>
+                                );
+                              })()}
                             </div>
                           </div>
                           <div style={{ display: 'flex', gap: '8px' }}>

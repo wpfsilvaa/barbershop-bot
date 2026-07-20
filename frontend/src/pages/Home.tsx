@@ -103,7 +103,7 @@ export const Home: React.FC = () => {
               e.currentTarget.style.boxShadow = 'none';
             }}
           >
-            Portal do Cliente 💈
+            Portal do Cliente
           </button>
 
           <button
@@ -157,7 +157,7 @@ export const Home: React.FC = () => {
           letterSpacing: '1px',
           textTransform: 'uppercase'
         }}>
-          Agendamento Online de Barbearias 💈
+          Agendamento Online de Barbearias
         </div>
         <h1 style={{
           fontSize: '44px',

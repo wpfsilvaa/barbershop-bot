@@ -44,8 +44,8 @@ app.use((0, cors_1.default)({
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Token'],
 }));
-app.use(express_1.default.json());
-app.use(express_1.default.urlencoded({ extended: true }));
+app.use(express_1.default.json({ limit: '10mb' }));
+app.use(express_1.default.urlencoded({ limit: '10mb', extended: true }));
 // Custom Security Middlewares (XSS Prevention & CSRF Double Submit Validation)
 app.use(security_1.xssSanitizer);
 app.use(security_1.csrfCheck);

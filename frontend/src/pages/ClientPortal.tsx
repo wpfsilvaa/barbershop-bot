@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
   Calendar, 
@@ -54,6 +54,7 @@ interface Establishment {
   name: string;
   logo_url: string | null;
   address?: string;
+  photos?: string[];
   opening_time: string;
   closing_time: string;
 }
@@ -109,6 +110,8 @@ export const ClientPortal: React.FC = () => {
 
   // Booking Flow States
   const [selectedEst, setSelectedEst] = useState<string>('');
+  const [currentPhotoIdx, setCurrentPhotoIdx] = useState<number>(0);
+  const [expandedPhoto, setExpandedPhoto] = useState<string | null>(null);
   const [estDetails, setEstDetails] = useState<{ barbers: Barber[]; services: Service[]; plans: Plan[] } | null>(null);
   const [selectedBarber, setSelectedBarber] = useState('');
   const [selectedService, setSelectedService] = useState('');
@@ -125,6 +128,31 @@ export const ClientPortal: React.FC = () => {
   const [rescheduleSlots, setRescheduleSlots] = useState<string[]>([]);
   const [loadingReschedSlots, setLoadingReschedSlots] = useState(false);
   const [reschedulingLoading, setReschedulingLoading] = useState(false);
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const handleScroll = (direction: 'left' | 'right') => {
+    if (scrollRef.current) {
+      const { scrollLeft, clientWidth, scrollWidth } = scrollRef.current;
+      const scrollAmount = clientWidth * 0.75;
+      
+      let scrollTo = 0;
+      if (direction === 'right') {
+        if (scrollLeft + clientWidth >= scrollWidth - 20) {
+          scrollTo = 0;
+        } else {
+          scrollTo = scrollLeft + scrollAmount;
+        }
+      } else {
+        if (scrollLeft <= 20) {
+          scrollTo = scrollWidth - clientWidth;
+        } else {
+          scrollTo = scrollLeft - scrollAmount;
+        }
+      }
+      
+      scrollRef.current.scrollTo({ left: scrollTo, behavior: 'smooth' });
+    }
+  };
 
   // Feedback/Evaluation States
   const [feedbackBookingId, setFeedbackBookingId] = useState<string | null>(null);
@@ -822,6 +850,73 @@ export const ClientPortal: React.FC = () => {
         {activeTab === 'book' && (
           <div className="card-premium animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
             <h2 style={{ fontSize: '20px', fontWeight: 'bold', marginBottom: '8px' }}>Agendar Novo Atendimento</h2>
+
+            {selectedEst && (() => {
+              const estObj = establishments.find(e => e.id === selectedEst);
+              if (!estObj || !estObj.photos || estObj.photos.length === 0) return null;
+              return (
+                <div style={{ position: 'relative', width: '100%', marginBottom: '10px' }}>
+                  {/* Setas de navegação flutuantes */}
+                  {estObj.photos.length > 3 && (
+                    <>
+                      <button
+                        type="button"
+                        style={{ position: 'absolute', left: '-12px', top: '50%', transform: 'translateY(-50%)', background: 'rgba(0,0,0,0.8)', color: 'var(--primary)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '50%', width: '36px', height: '36px', display: 'flex', justifyContent: 'center', alignItems: 'center', cursor: 'pointer', zIndex: 10, boxShadow: '0 4px 12px rgba(0,0,0,0.5)' }}
+                        onClick={() => handleScroll('left')}
+                      >
+                        <ChevronRight size={20} style={{ transform: 'rotate(180deg)' }} />
+                      </button>
+                      <button
+                        type="button"
+                        style={{ position: 'absolute', right: '-12px', top: '50%', transform: 'translateY(-50%)', background: 'rgba(0,0,0,0.8)', color: 'var(--primary)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '50%', width: '36px', height: '36px', display: 'flex', justifyContent: 'center', alignItems: 'center', cursor: 'pointer', zIndex: 10, boxShadow: '0 4px 12px rgba(0,0,0,0.5)' }}
+                        onClick={() => handleScroll('right')}
+                      >
+                        <ChevronRight size={20} />
+                      </button>
+                    </>
+                  )}
+                  
+                  {/* Container horizontal com scroll suave */}
+                  <div 
+                    ref={scrollRef}
+                    style={{ 
+                      display: 'flex', 
+                      gap: '16px', 
+                      overflowX: 'auto', 
+                      scrollBehavior: 'smooth', 
+                      padding: '4px 0',
+                      scrollbarWidth: 'none',
+                      msOverflowStyle: 'none'
+                    }}
+                    className="hide-scrollbar"
+                  >
+                    {estObj.photos.map((photo, idx) => (
+                      <div 
+                        key={idx} 
+                        style={{ 
+                          flex: '0 0 calc(33.333% - 11px)', 
+                          minWidth: '180px', 
+                          height: '140px', 
+                          borderRadius: '8px', 
+                          overflow: 'hidden', 
+                          border: '1px solid rgba(255,255,255,0.06)' 
+                        }}
+                      >
+                        <img 
+                          src={photo} 
+                          alt={`Foto local ${idx + 1}`} 
+                          style={{ width: '100%', height: '100%', objectFit: 'cover', cursor: 'pointer' }} 
+                          onClick={() => setExpandedPhoto(photo)}
+                          onError={(e) => {
+                            e.currentTarget.src = 'https://images.unsplash.com/photo-1503951914875-452162b0f3f1?q=80&w=300';
+                          }}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
             
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '20px' }}>
               
@@ -831,7 +926,10 @@ export const ClientPortal: React.FC = () => {
                 <select 
                   className="form-input" 
                   value={selectedEst}
-                  onChange={(e) => setSelectedEst(e.target.value)}
+                  onChange={(e) => {
+                    setSelectedEst(e.target.value);
+                    setCurrentPhotoIdx(0);
+                  }}
                 >
                   <option value="">Selecione...</option>
                   {establishments.map(est => (
@@ -850,6 +948,7 @@ export const ClientPortal: React.FC = () => {
                         <MapPin size={16} />
                         <span><strong>Endereço do Salão:</strong> {estObj.address}</span>
                       </div>
+
                       <div style={{ width: '100%', height: '180px', borderRadius: '6px', overflow: 'hidden' }}>
                         <iframe 
                           width="100%" 
@@ -1266,6 +1365,67 @@ export const ClientPortal: React.FC = () => {
               </div>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* LIGHTBOX: FOTO EXPANDIDA */}
+      {expandedPhoto && (
+        <div 
+          style={{ 
+            position: 'fixed', 
+            top: 0, 
+            left: 0, 
+            right: 0, 
+            bottom: 0, 
+            backgroundColor: 'rgba(0,0,0,0.95)', 
+            display: 'flex', 
+            justifyContent: 'center', 
+            alignItems: 'center', 
+            zIndex: 99999, 
+            padding: '20px',
+            cursor: 'zoom-out'
+          }}
+          onClick={() => setExpandedPhoto(null)}
+        >
+          <button
+            type="button"
+            style={{ 
+              position: 'absolute', 
+              top: '20px', 
+              right: '20px', 
+              background: 'rgba(255,255,255,0.1)', 
+              color: '#ffffff', 
+              border: 'none', 
+              borderRadius: '50%', 
+              width: '40px', 
+              height: '40px', 
+              display: 'flex', 
+              justifyContent: 'center', 
+              alignItems: 'center', 
+              cursor: 'pointer',
+              zIndex: 100000
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+              setExpandedPhoto(null);
+            }}
+          >
+            <X size={24} />
+          </button>
+          
+          <img 
+            src={expandedPhoto} 
+            alt="Local do Salão Expandido" 
+            style={{ 
+              maxWidth: '90%', 
+              maxHeight: '85%', 
+              objectFit: 'contain', 
+              borderRadius: '8px', 
+              boxShadow: '0 10px 30px rgba(0,0,0,0.8)',
+              cursor: 'default'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          />
         </div>
       )}
 

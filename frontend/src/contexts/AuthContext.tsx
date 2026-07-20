@@ -8,12 +8,14 @@ export interface User {
   role: 'admin' | 'owner' | 'barber';
   establishment_id: string | null;
   requirePasswordChange?: boolean;
+  establishment_expires_at?: string;
 }
 
 interface AuthContextType {
   user: User | null;
   token: string | null;
   loading: boolean;
+  revocationReason: 'revoked' | 'expired' | null;
   login: (email: string, password: string) => Promise<void>;
   logout: () => void;
   reloadUser: () => Promise<void>;
@@ -25,6 +27,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<User | null>(null);
   const [token, setTokenState] = useState<string | null>(getAuthToken());
   const [loading, setLoading] = useState(true);
+  const [revocationReason, setRevocationReason] = useState<'revoked' | 'expired' | null>(null);
 
   const reloadUser = async () => {
     const currentToken = getAuthToken();
@@ -38,12 +41,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const userData = await apiRequest('/auth/me', 'GET');
       setUser(userData);
-    } catch (err) {
+      setRevocationReason(null);
+    } catch (err: any) {
       console.error('Failed to load user profile:', err);
-      // Clean invalid token
-      setAuthToken(null);
-      setTokenState(null);
-      setUser(null);
+      if (err.message) {
+        if (err.message.includes('expirado') || err.message.includes('assinatura')) {
+          setRevocationReason('expired');
+        } else if (err.message.includes('revogado') || err.message.includes('suspenso')) {
+          setRevocationReason('revoked');
+        } else {
+          // Clean invalid token
+          setAuthToken(null);
+          setTokenState(null);
+          setUser(null);
+        }
+      } else {
+        // Clean invalid token
+        setAuthToken(null);
+        setTokenState(null);
+        setUser(null);
+      }
     } finally {
       setLoading(false);
     }
@@ -55,13 +72,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const login = async (email: string, password: string) => {
     setLoading(true);
+    setRevocationReason(null);
     try {
       const response = await apiRequest('/auth/login', 'POST', { email, password });
       setAuthToken(response.token);
       setTokenState(response.token);
       setUser(response.user);
-    } catch (err) {
+    } catch (err: any) {
       setLoading(false);
+      if (err.message) {
+        if (err.message.includes('expirado') || err.message.includes('assinatura')) {
+          setRevocationReason('expired');
+        } else if (err.message.includes('revogado') || err.message.includes('suspenso')) {
+          setRevocationReason('revoked');
+        }
+      }
       throw err;
     } finally {
       setLoading(false);
@@ -72,11 +97,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setAuthToken(null);
     setTokenState(null);
     setUser(null);
+    setRevocationReason(null);
     window.location.href = '/login';
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, logout, reloadUser }}>
+    <AuthContext.Provider value={{ user, token, loading, revocationReason, login, logout, reloadUser }}>
       {children}
     </AuthContext.Provider>
   );

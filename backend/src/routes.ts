@@ -50,7 +50,8 @@ import {
   getEstablishmentMetrics,
   getGlobalMetrics,
   updateEstablishmentCommission,
-  updateEstablishmentStatus
+  updateEstablishmentStatus,
+  updateEstablishmentLicense
 } from './controllers/adminController';
 
 import {
@@ -566,6 +567,7 @@ router.post('/admin/whatsapp-sessions/:establishmentId/logout', verifyToken, req
 // Super Admin Establishment Commission configuration
 router.put('/admin/establishments/:establishmentId/commission', verifyToken, requireRole(['admin']), updateEstablishmentCommission);
 router.put('/admin/establishments/:establishmentId/status', verifyToken, requireRole(['admin']), updateEstablishmentStatus);
+router.put('/admin/establishments/:establishmentId/license', verifyToken, requireRole(['admin']), updateEstablishmentLicense);
 
 // Establishment Metrics (Owner, Admin or Barber)
 router.get('/establishments/:establishmentId/metrics', verifyToken, checkEstablishmentAccess, getEstablishmentMetrics);
