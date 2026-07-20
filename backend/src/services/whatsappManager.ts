@@ -1625,19 +1625,20 @@ export async function getActiveChats(establishmentId: string) {
   }
 
   // 3. Resolve client names from DB (clients table) to prioritize manually edited names
-  const phonesList = chatsList.map(c => c.phone);
-  if (phonesList.length > 0) {
+  const cleanPhonesList = chatsList.map(c => c.phone.split('@')[0]);
+  if (cleanPhonesList.length > 0) {
     try {
       const dbClients = await pool.query(
         "SELECT phone, name FROM clients WHERE establishment_id = $1 AND phone = ANY($2)",
-        [establishmentId, phonesList]
+        [establishmentId, cleanPhonesList]
       );
       const clientNamesMap = new Map<string, string>();
       for (const row of dbClients.rows) {
         clientNamesMap.set(row.phone, row.name);
       }
       for (const chat of chatsList) {
-        const dbName = clientNamesMap.get(chat.phone);
+        const cleanChatPhone = chat.phone.split('@')[0];
+        const dbName = clientNamesMap.get(cleanChatPhone);
         if (dbName) {
           chat.clientPushName = dbName;
         }
