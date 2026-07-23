@@ -2,8 +2,43 @@ import { Request, Response } from 'express';
 import pool from '../config/db';
 import { AuthenticatedRequest } from '../middleware/auth';
 import { sendOrchestratedMessage } from '../services/whatsappManager';
+import { formatZoned, zonedTimeToUtc } from '../utils/datetime';
+import { normalizePhone } from '../utils/phone';
+
+/**
+ * Validação comum aos dois fluxos de criação de agendamento (painel e web público).
+ * Retorna a data validada ou uma mensagem de erro.
+ */
+const validateAppointmentTime = (raw: unknown): { date: Date } | { error: string } => {
+  if (typeof raw !== 'string' && !(raw instanceof Date)) {
+    return { error: 'Horário do agendamento inválido.' };
+  }
+
+  const date = new Date(raw as string);
+  if (isNaN(date.getTime())) {
+    return { error: 'Horário do agendamento inválido.' };
+  }
+
+  const now = Date.now();
+  if (date.getTime() <= now) {
+    return { error: 'O agendamento precisa ser em um horário futuro.' };
+  }
+
+  // Sem limite superior, a rota pública permitia criar agendamentos no ano 9999 e
+  // poluir a agenda indefinidamente.
+  if (date.getTime() > now + 365 * 24 * 60 * 60 * 1000) {
+    return { error: 'Só é possível agendar com até 1 ano de antecedência.' };
+  }
+
+  return { date };
+};
 
 // Helper to generate slots
+//
+// `opening_time`/`closing_time` são horários LOCAIS da barbearia. A versão
+// anterior fazia `new Date("2026-07-23T09:00")`, que o Node interpreta no fuso do
+// processo — em um contêiner UTC (o caso padrão em produção) a agenda inteira
+// aparecia deslocada em 3 horas em relação ao que o dono configurou.
 const generateSlots = (
   dateStr: string,
   openingTime: string,
@@ -11,45 +46,41 @@ const generateSlots = (
   durationMinutes: number
 ): Date[] => {
   const slots: Date[] = [];
-  const start = new Date(`${dateStr}T${openingTime}`);
-  const end = new Date(`${dateStr}T${closingTime}`);
+  const step = Number(durationMinutes) > 0 ? Number(durationMinutes) : 30;
+
+  const start = zonedTimeToUtc(dateStr, openingTime);
+  const end = zonedTimeToUtc(dateStr, closingTime);
+
+  // Guarda contra configuração inválida (fechamento antes da abertura), que na
+  // versão anterior simplesmente devolvia lista vazia sem sinalizar nada.
+  if (!(start < end)) return slots;
+
   let current = new Date(start);
-  
   while (current < end) {
     slots.push(new Date(current));
-    current.setMinutes(current.getMinutes() + durationMinutes);
+    current = new Date(current.getTime() + step * 60 * 1000);
   }
   return slots;
 };
 
-// Format Date/Time helper
-const formatNotificationDate = (dateStr: string | Date): { date: string; time: string } => {
-  const date = new Date(dateStr);
-  const day = String(date.getDate()).padStart(2, '0');
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const year = date.getFullYear();
-  
-  const hours = String(date.getHours()).padStart(2, '0');
-  const minutes = String(date.getMinutes()).padStart(2, '0');
-  
-  return {
-    date: `${day}/${month}/${year}`,
-    time: `${hours}:${minutes}`
-  };
-};
+// Format Date/Time helper — sempre no fuso do estabelecimento, nunca no do processo.
+const formatNotificationDate = (dateStr: string | Date): { date: string; time: string } =>
+  formatZoned(dateStr);
 
 // Get available slots for a barber on a specific date
 export const getAvailableSlots = async (req: Request, res: Response) => {
   const { establishmentId, barberId } = req.params;
   const { date } = req.query; // YYYY-MM-DD
 
-  if (!date || typeof date !== 'string') {
+  // Valida o formato antes de usar a data em cálculos de fuso; um valor livre
+  // gerava `Invalid Date` e a rota devolvia uma lista vazia sem explicação.
+  if (!date || typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     return res.status(400).json({ error: 'Date query parameter is required (format: YYYY-MM-DD).' });
   }
 
   try {
     const estResult = await pool.query(
-      'SELECT opening_time, closing_time, slot_duration_minutes FROM establishments WHERE id = $1',
+      'SELECT opening_time, closing_time, slot_duration_minutes FROM establishments WHERE id = $1 AND is_active = TRUE',
       [establishmentId]
     );
 
@@ -57,16 +88,39 @@ export const getAvailableSlots = async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Establishment not found.' });
     }
 
+    // O barbeiro precisa pertencer ao estabelecimento da URL: sem esta checagem
+    // a rota pública expunha a agenda de qualquer profissional de qualquer
+    // barbearia, bastando trocar o barberId.
+    const barberResult = await pool.query(
+      `SELECT id FROM users
+       WHERE id = $1 AND establishment_id = $2 AND role = 'barber' AND is_active = TRUE`,
+      [barberId, establishmentId]
+    );
+
+    if (barberResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Professional not found in this establishment.' });
+    }
+
     const { opening_time, closing_time, slot_duration_minutes } = estResult.rows[0];
+    const slotDuration = parseInt(slot_duration_minutes, 10) || 30;
+
+    // Janela do dia no fuso do estabelecimento. O filtro anterior
+    // (`DATE(appointment_time AT TIME ZONE 'UTC') = $2`) recortava pelo dia UTC e
+    // ignorava agendamentos do começo/fim do dia local, liberando horários que na
+    // verdade estavam ocupados.
+    const dayStart = zonedTimeToUtc(date, '00:00');
+    const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
 
     const appResult = await pool.query(
-      `SELECT a.appointment_time, 
+      `SELECT a.appointment_time,
               COALESCE(bs.duration_minutes, s.duration_minutes, 30) as duration_minutes
        FROM appointments a
        LEFT JOIN services s ON a.service_id = s.id
        LEFT JOIN barber_services bs ON a.service_id = bs.service_id AND bs.barber_id = a.barber_id
-       WHERE a.barber_id = $1 AND DATE(a.appointment_time AT TIME ZONE 'UTC') = $2 AND a.status != 'cancelled'`,
-      [barberId, date]
+       WHERE a.barber_id = $1
+         AND a.appointment_time >= $2 AND a.appointment_time < $3
+         AND a.status != 'cancelled'`,
+      [barberId, dayStart.toISOString(), dayEnd.toISOString()]
     );
 
     const bookedIntervals = appResult.rows.map((row) => {
@@ -78,17 +132,22 @@ export const getAvailableSlots = async (req: Request, res: Response) => {
       };
     });
 
-    const allSlots = generateSlots(date, opening_time, closing_time, slot_duration_minutes);
+    const allSlots = generateSlots(date, opening_time, closing_time, slotDuration);
     const now = new Date();
 
     const availableSlots = allSlots.filter((slot) => {
-      const slotTime = slot.getTime();
-      if (slotTime <= now.getTime()) {
+      const slotStart = slot.getTime();
+      const slotEnd = slotStart + slotDuration * 60 * 1000;
+
+      if (slotStart <= now.getTime()) {
         return false;
       }
-      
+
+      // Sobreposição real de intervalos. A checagem anterior só olhava o início do
+      // slot, então um agendamento de 10:15–10:45 não bloqueava o slot 10:00–10:30
+      // e o cliente conseguia marcar em cima do horário de outra pessoa.
       const isOverlap = bookedIntervals.some(
-        (interval) => slotTime >= interval.start && slotTime < interval.end
+        (interval) => slotStart < interval.end && slotEnd > interval.start
       );
       return !isOverlap;
     });
@@ -140,10 +199,20 @@ export const listAppointments = async (req: AuthenticatedRequest, res: Response)
 // Create an appointment manually (Authenticated Dashboard)
 export const createAppointment = async (req: AuthenticatedRequest, res: Response) => {
   const { establishmentId } = req.params;
-  const { barber_id, client_name, client_phone, appointment_time, service_id } = req.body;
+  const { barber_id, client_name, appointment_time, service_id } = req.body;
 
-  if (!barber_id || !client_name || !client_phone || !appointment_time) {
+  if (!barber_id || !client_name || !req.body.client_phone || !appointment_time) {
     return res.status(400).json({ error: 'Barber ID, client name, client phone, and appointment time are required.' });
+  }
+
+  const validated = validateAppointmentTime(appointment_time);
+  if ('error' in validated) {
+    return res.status(400).json({ error: validated.error });
+  }
+
+  const client_phone = normalizePhone(req.body.client_phone);
+  if (client_phone.length < 12) {
+    return res.status(400).json({ error: 'Telefone do cliente inválido. Informe DDD + número.' });
   }
 
   const client = await pool.connect();
@@ -210,9 +279,9 @@ export const createAppointment = async (req: AuthenticatedRequest, res: Response
     }
 
     const timeCheck = await client.query(
-      `SELECT id FROM appointments 
+      `SELECT id FROM appointments
        WHERE barber_id = $1 AND appointment_time = $2 AND status != 'cancelled'`,
-      [barber_id, appointment_time]
+      [barber_id, validated.date.toISOString()]
     );
 
     if (timeCheck.rows.length > 0) {
@@ -224,12 +293,12 @@ export const createAppointment = async (req: AuthenticatedRequest, res: Response
       `INSERT INTO appointments (establishment_id, barber_id, client_id, appointment_time, status, service_id)
        VALUES ($1, $2, $3, $4, 'confirmed', $5)
        RETURNING id, appointment_time, status, service_id`,
-      [establishmentId, barber_id, clientId, appointment_time, service_id || null]
+      [establishmentId, barber_id, clientId, validated.date.toISOString(), service_id || null]
     );
 
     await client.query('COMMIT');
 
-    const timeInfo = formatNotificationDate(appointment_time);
+    const timeInfo = formatNotificationDate(validated.date);
     const messageText = `✅ *Horário Reservado Manualmente!*\n\nOlá, *${client_name}*!\n\nConfirmamos o agendamento do seu horário:\n\n` +
                         `*Estabelecimento:* ${establishment_name}\n` +
                         (serviceName ? `*Serviço:* ${serviceName}\n` : '') +
@@ -242,8 +311,13 @@ export const createAppointment = async (req: AuthenticatedRequest, res: Response
     });
 
     return res.status(201).json(result.rows[0]);
-  } catch (error) {
+  } catch (error: any) {
     await client.query('ROLLBACK');
+    // 23505 = violação do índice único (barber_id, appointment_time). É a corrida
+    // entre dois pedidos simultâneos para o mesmo horário: erro de negócio, não 500.
+    if (error?.code === '23505') {
+      return res.status(409).json({ error: 'This time slot is already booked for this professional.' });
+    }
     console.error('Create appointment error:', error);
     return res.status(500).json({ error: 'Internal server error.' });
   } finally {
@@ -282,6 +356,13 @@ export const updateAppointment = async (req: AuthenticatedRequest, res: Response
     }
 
     const appt = currentAppt.rows[0];
+
+    // Um barbeiro só mexe na própria agenda. Sem isto, qualquer barbeiro podia
+    // remarcar (e transferir para si) o agendamento de um colega.
+    if (req.user?.role === 'barber' && appt.barber_id !== req.user.id) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'Permission denied. You cannot modify appointments of another barber.' });
+    }
 
     // Barber check
     const barberCheck = await client.query(
@@ -403,22 +484,41 @@ export const cancelAppointment = async (req: AuthenticatedRequest, res: Response
 // Create a public booking from client web app (Unauthenticated)
 export const createPublicAppointment = async (req: Request, res: Response) => {
   const { establishmentId } = req.params;
-  const { barber_id, client_name, client_phone, appointment_time, service_id } = req.body;
+  const { barber_id, client_name, appointment_time, service_id } = req.body;
 
-  if (!barber_id || !client_name || !client_phone || !appointment_time) {
+  if (!barber_id || !client_name || !req.body.client_phone || !appointment_time) {
     return res.status(400).json({ error: 'Barber ID, client name, client phone, and appointment time are required.' });
+  }
+
+  // Endpoint sem autenticação: toda validação de entrada precisa acontecer aqui.
+  const validated = validateAppointmentTime(appointment_time);
+  if ('error' in validated) {
+    return res.status(400).json({ error: validated.error });
+  }
+
+  const client_phone = normalizePhone(req.body.client_phone);
+  if (client_phone.length < 12) {
+    return res.status(400).json({ error: 'Telefone inválido. Informe DDD + número.' });
+  }
+
+  const trimmedName = String(client_name).trim();
+  if (trimmedName.length < 2 || trimmedName.length > 255) {
+    return res.status(400).json({ error: 'Nome do cliente inválido.' });
   }
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    // Fetch establishment and barber details
+    // Fetch establishment and barber details. O estabelecimento precisa estar
+    // ativo: sem isso, uma barbearia suspensa continuava recebendo agendamentos
+    // pelo link público.
     const barberCheck = await client.query(
-      `SELECT u.id, u.name as barber_name, e.name as establishment_name 
+      `SELECT u.id, u.name as barber_name, e.name as establishment_name
        FROM users u
        JOIN establishments e ON u.establishment_id = e.id
-       WHERE u.id = $1 AND u.establishment_id = $2 AND u.role = 'barber'`,
+       WHERE u.id = $1 AND u.establishment_id = $2 AND u.role = 'barber'
+         AND u.is_active = TRUE AND e.is_active = TRUE`,
       [barber_id, establishmentId]
     );
 
@@ -476,7 +576,7 @@ export const createPublicAppointment = async (req: Request, res: Response) => {
     const timeCheck = await client.query(
       `SELECT id FROM appointments 
        WHERE barber_id = $1 AND appointment_time = $2 AND status != 'cancelled'`,
-      [barber_id, appointment_time]
+      [barber_id, validated.date.toISOString()]
     );
 
     if (timeCheck.rows.length > 0) {
@@ -488,13 +588,13 @@ export const createPublicAppointment = async (req: Request, res: Response) => {
       `INSERT INTO appointments (establishment_id, barber_id, client_id, appointment_time, status, service_id)
        VALUES ($1, $2, $3, $4, 'confirmed', $5)
        RETURNING id, appointment_time, status, service_id`,
-      [establishmentId, barber_id, clientId, appointment_time, service_id || null]
+      [establishmentId, barber_id, clientId, validated.date.toISOString(), service_id || null]
     );
 
     await client.query('COMMIT');
 
     // Send WhatsApp notification
-    const timeInfo = formatNotificationDate(appointment_time);
+    const timeInfo = formatNotificationDate(validated.date);
     const messageText = `✅ *Agendamento Confirmado via Web App!*\n\nOlá, *${client_name}*!\n\nSeu horário foi reservado com sucesso no nosso site:\n\n` +
                         `*Estabelecimento:* ${establishment_name}\n` +
                         (serviceName ? `*Serviço:* ${serviceName}\n` : '') +
@@ -507,8 +607,11 @@ export const createPublicAppointment = async (req: Request, res: Response) => {
     });
 
     return res.status(201).json(result.rows[0]);
-  } catch (error) {
+  } catch (error: any) {
     await client.query('ROLLBACK');
+    if (error?.code === '23505') {
+      return res.status(409).json({ error: 'This time slot is already booked for this professional.' });
+    }
     console.error('Create public appointment error:', error);
     return res.status(500).json({ error: 'Internal server error.' });
   } finally {
@@ -521,16 +624,38 @@ export const completeAppointment = async (req: AuthenticatedRequest, res: Respon
   const { establishmentId, bookingId } = req.params;
 
   try {
+    // Um barbeiro só pode concluir os próprios atendimentos — a rota alimenta os
+    // relatórios de faturamento e comissão, então dar baixa no agendamento de
+    // outro profissional distorce o cálculo financeiro dele.
+    const ownershipCheck = await pool.query(
+      'SELECT barber_id, status FROM appointments WHERE id = $1 AND establishment_id = $2',
+      [bookingId, establishmentId]
+    );
+
+    if (ownershipCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Appointment not found.' });
+    }
+
+    if (req.user?.role === 'barber' && ownershipCheck.rows[0].barber_id !== req.user.id) {
+      return res.status(403).json({ error: 'Permission denied. You cannot complete appointments of another barber.' });
+    }
+
+    if (ownershipCheck.rows[0].status === 'cancelled') {
+      return res.status(400).json({ error: 'Não é possível concluir um agendamento cancelado.' });
+    }
+
+    // `status <> 'completed'` impede que dois cliques disparem duas mensagens de
+    // agradecimento para o mesmo atendimento.
     const result = await pool.query(
-      `UPDATE appointments 
+      `UPDATE appointments
        SET status = 'completed'
-       WHERE id = $1 AND establishment_id = $2
+       WHERE id = $1 AND establishment_id = $2 AND status <> 'completed'
        RETURNING id, status`,
       [bookingId, establishmentId]
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Appointment not found.' });
+      return res.status(400).json({ error: 'Este atendimento já foi concluído.' });
     }
 
     // Send thank you message on WhatsApp

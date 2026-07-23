@@ -1,5 +1,6 @@
 import pool from '../config/db';
 import { outboundQueue, redisConnection } from '../config/redis';
+import { normalizePhone } from '../utils/phone';
 
 // -------------------------------------------------------------
 // WhatsApp Session Orchestration (Redis Pub/Sub Driven)
@@ -63,12 +64,11 @@ export async function initializeAllWhatsAppSessions() {
 // -------------------------------------------------------------
 export async function sendOrchestratedMessage(establishmentId: string, phone: string, text: string): Promise<boolean> {
   try {
-    let cleanPhone = phone.replace(/\D/g, '');
-    if (cleanPhone.startsWith('55') && cleanPhone.length === 13) {
-      const ddd = parseInt(cleanPhone.substring(2, 4), 10);
-      if (ddd > 28) {
-        cleanPhone = cleanPhone.substring(0, 4) + cleanPhone.substring(5);
-      }
+    const cleanPhone = normalizePhone(phone);
+
+    if (!cleanPhone) {
+      console.error('[QueueOperations] Telefone inválido descartado na fila de saída.');
+      return false;
     }
 
     await outboundQueue.add('send-whatsapp-message', {
@@ -84,13 +84,12 @@ export async function sendOrchestratedMessage(establishmentId: string, phone: st
 }
 
 export async function sendManualMessage(establishmentId: string, phone: string, text: string): Promise<string> {
-  let cleanPhone = phone.replace(/\D/g, '');
-  if (cleanPhone.startsWith('55') && cleanPhone.length === 13) {
-    const ddd = parseInt(cleanPhone.substring(2, 4), 10);
-    if (ddd > 28) {
-      cleanPhone = cleanPhone.substring(0, 4) + cleanPhone.substring(5);
-    }
+  const cleanPhone = normalizePhone(phone);
+
+  if (!cleanPhone) {
+    throw new Error('Telefone de destino inválido.');
   }
+
   const formattedJid = `${cleanPhone}@s.whatsapp.net`;
 
   // 1. Queue outbound message in BullMQ
@@ -200,25 +199,46 @@ export async function getActiveChats(establishmentId: string) {
 
   const chatsRes = await pool.query(queryText, isAll ? [] : [establishmentId]);
 
+  if (chatsRes.rows.length === 0) return [];
+
+  // Antes havia uma query de mensagens por conversa (N+1). O painel recarrega esta
+  // lista a cada evento do WebSocket, então com algumas dezenas de conversas ativas
+  // isso virava uma enxurrada de queries a cada mensagem recebida. Agora buscamos
+  // as últimas 50 mensagens de todas as conversas em uma única query com window
+  // function e agrupamos em memória.
+  const chatKeys = chatsRes.rows.map((r) => `${r.establishment_id}|${r.phone}`);
+
+  const messagesRes = await pool.query(
+    `SELECT establishment_id, phone, message_text AS text, from_me AS "fromMe", created_at
+     FROM (
+       SELECT m.*,
+              ROW_NUMBER() OVER (PARTITION BY m.establishment_id, m.phone ORDER BY m.id DESC) AS rn
+       FROM whatsapp_messages m
+       WHERE (m.establishment_id::text || '|' || m.phone) = ANY($1)
+     ) ranked
+     WHERE rn <= 50
+     ORDER BY establishment_id, phone, created_at ASC, id ASC`,
+    [chatKeys]
+  );
+
+  const messagesByChat = new Map<string, { text: string; fromMe: boolean; time: string }[]>();
+  for (const m of messagesRes.rows) {
+    const key = `${m.establishment_id}|${m.phone}`;
+    if (!messagesByChat.has(key)) messagesByChat.set(key, []);
+    messagesByChat.get(key)!.push({
+      text: m.text,
+      fromMe: m.fromMe,
+      time: new Date(m.created_at).toLocaleTimeString('pt-BR', {
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZone: 'America/Sao_Paulo',
+      }),
+    });
+  }
+
   const chats: any[] = [];
   for (const row of chatsRes.rows) {
-    const msgsRes = await pool.query(
-      `SELECT message_text as text, from_me as "fromMe", created_at
-       FROM whatsapp_messages
-       WHERE establishment_id = $1 AND phone = $2
-       ORDER BY id ASC LIMIT 50`,
-      [row.establishment_id, row.phone]
-    );
-
-    const messages = msgsRes.rows.map(m => {
-      const time = new Date(m.created_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' });
-      return {
-        text: m.text,
-        fromMe: m.fromMe,
-        time
-      };
-    });
-
+    const messages = messagesByChat.get(`${row.establishment_id}|${row.phone}`) || [];
     const displayName = row.client_name || row.push_name || 'Cliente';
 
     chats.push({
@@ -264,7 +284,9 @@ export async function resolveLidRetroactively(lidJid: string, realPhone: string)
        ON CONFLICT (lid) DO UPDATE SET phone = EXCLUDED.phone, updated_at = NOW()`,
       [cleanLid, cleanPhone]
     );
-    await pool.query("UPDATE appointments SET client_phone = $1 WHERE client_phone = $2", [cleanPhone, cleanLid]);
+    // A tabela `appointments` não tem coluna `client_phone` (o telefone vive em
+    // `clients`); o UPDATE que existia aqui falhava sempre com erro de SQL e
+    // abortava o resto do remapeamento antes de corrigir os chats e mensagens.
     await pool.query("UPDATE clients SET phone = $1 WHERE phone = $2", [cleanPhone, cleanLid]);
     await pool.query("UPDATE whatsapp_chats SET phone = $1 WHERE phone = $2", [cleanPhone, cleanLid]);
     await pool.query("UPDATE whatsapp_messages SET phone = $1 WHERE phone = $2", [cleanPhone, cleanLid]);

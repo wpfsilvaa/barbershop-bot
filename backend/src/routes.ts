@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import Redis from 'ioredis';
+import crypto from 'crypto';
 import pool from './config/db';
 import { login, getMe, registerOwner, changeTempPassword } from './controllers/authController';
 import { listBarbers, createBarber, updateBarber, deleteBarber, listPublicBarbers } from './controllers/barberController';
@@ -34,7 +34,9 @@ import {
   deleteEstablishmentClient
 } from './controllers/crmController';
 import { verifyToken, requireRole, checkEstablishmentAccess, AuthenticatedRequest } from './middleware/auth';
-import { authRateLimiter, apiRateLimiter } from './middleware/security';
+import { authRateLimiter, apiRateLimiter, internalWebhookAuth } from './middleware/security';
+import { isSamePhone, normalizePhone } from './utils/phone';
+import { subscribeToChatUpdates } from './services/chatEvents';
 import { 
   startWhatsAppSession, 
   disconnectWhatsAppSession,
@@ -59,6 +61,8 @@ import {
   startWhatsAppSessionAdmin
 } from './controllers/adminController';
 
+import { sendOrchestratedMessage } from './services/whatsappManager';
+
 import {
   authClient,
   getClientData,
@@ -72,6 +76,10 @@ import {
 } from './controllers/clientPortalController';
 
 const router = Router();
+
+// Estabelecimento "Sistema BarberHub", dono da sessão WhatsApp usada para
+// notificações da plataforma (credenciais de acesso, avisos de vencimento).
+const SYSTEM_ESTABLISHMENT_ID = '00000000-0000-0000-0000-000000000000';
 
 // ==========================================
 // PUBLIC ROUTES
@@ -256,6 +264,47 @@ router.delete(
   deletePlan
 );
 
+// Digital Loyalty Card Route for Client Portal
+//
+// Antes esta rota era pública: qualquer pessoa podia iterar números de telefone e
+// descobrir quem é cliente de qual barbearia e com que frequência frequenta.
+// Agora exige token de cliente e só devolve os dados do próprio telefone.
+router.get('/client-portal/loyalty/:phone', verifyToken, requireRole(['client']), async (req: AuthenticatedRequest, res) => {
+  const phone = String(req.params.phone || '');
+  const cleanPhone = normalizePhone(phone);
+
+  if (!isSamePhone(phone, req.user?.phone)) {
+    return res.status(403).json({ error: 'Você só pode consultar a fidelidade do seu próprio número.' });
+  }
+
+  try {
+    const resCount = await pool.query(
+      `SELECT COUNT(a.id) as completed_count
+       FROM appointments a
+       JOIN clients c ON a.client_id = c.id
+       WHERE c.phone = $1 AND a.status = 'completed'`,
+      [cleanPhone]
+    );
+
+    const completed = parseInt(resCount.rows[0]?.completed_count || '0', 10);
+    const stamps = completed % 10;
+    const totalNeeded = 10;
+    const rewardAvailable = completed > 0 && stamps === 0;
+
+    return res.json({
+      phone: cleanPhone,
+      completedTotal: completed,
+      stamps,
+      totalNeeded,
+      rewardAvailable,
+      rewardDescription: 'Corte ou Barba Grátis no 10º Agendamento!'
+    });
+  } catch (err) {
+    console.error('Loyalty card query error:', err);
+    return res.status(500).json({ error: 'Erro ao consultar fidelidade.' });
+  }
+});
+
 // Contacts (Clients) and Promotions Marketing CRM Routes
 router.get(
   '/establishments/:establishmentId/clients',
@@ -368,23 +417,27 @@ router.post(
 );
 
 // Helper para verificar se o barbeiro pode acessar um telefone específico baseado nos agendamentos de hoje
+//
+// A comparação anterior (`targetPhone.endsWith(phone.slice(-9))`) tinha dois furos:
+// um cadastro com telefone vazio virava `endsWith('')`, que é sempre verdadeiro e
+// liberava TODAS as conversas da barbearia para qualquer barbeiro; e um sufixo de 9
+// dígitos podia colidir entre números distintos. `isSamePhone` normaliza os dois
+// lados e rejeita valores curtos demais (fail-secure).
 async function checkBarberChatAccess(barberId: string, establishmentId: string, targetPhone: string): Promise<boolean> {
+  if (!normalizePhone(targetPhone)) return false;
+
   const appointmentsToday = await pool.query(
-    `SELECT c.phone 
+    `SELECT c.phone
      FROM appointments a
      JOIN clients c ON a.client_id = c.id
-     WHERE a.barber_id = $1 
-       AND a.establishment_id = $2 
+     WHERE a.barber_id = $1
+       AND a.establishment_id = $2
        AND DATE(a.appointment_time AT TIME ZONE 'UTC') = CURRENT_DATE
        AND a.status != 'cancelled'`,
     [barberId, establishmentId]
   );
 
-  const targetPhoneClean = targetPhone.replace(/\D/g, '');
-  return appointmentsToday.rows.some(row => {
-    const phoneClean = row.phone.replace(/\D/g, '');
-    return targetPhoneClean.endsWith(phoneClean.slice(-9));
-  });
+  return appointmentsToday.rows.some((row) => isSamePhone(targetPhone, row.phone));
 }
 
 // Active Conversational Sessions Routes
@@ -415,14 +468,9 @@ router.get(
           [barberId, establishmentId]
         );
 
-        const clientPhones = appointmentsToday.rows.map(row => row.phone.replace(/\D/g, ''));
+        const clientPhones = appointmentsToday.rows.map((row) => row.phone);
 
-        chats = chats.filter(chat => {
-          const chatPhoneClean = chat.phone.replace(/\D/g, '');
-          return clientPhones.some(phone => {
-            return chatPhoneClean.endsWith(phone.slice(-9));
-          });
-        });
+        chats = chats.filter((chat) => clientPhones.some((phone) => isSamePhone(chat.phone, phone)));
       }
 
       return res.json(chats);
@@ -490,11 +538,17 @@ router.post(
 );
 
 // Webhook to receive real-time message events from WhatsApp workers and broadcast via WebSocket
+//
+// Rota máquina-a-máquina (gateway do WhatsApp -> backend). Estava sem qualquer
+// autenticação: qualquer pessoa na internet podia injetar mensagens falsas no
+// painel de qualquer barbearia — basta conhecer/adivinhar o UUID. Agora exige o
+// segredo compartilhado INTERNAL_API_KEY, comparado em tempo constante.
 router.post(
   '/bot/webhook-event',
+  internalWebhookAuth,
   async (req, res) => {
     const { establishmentId, event, phone, pushName, state, message } = req.body || {};
-    if (!establishmentId) {
+    if (!establishmentId || typeof establishmentId !== 'string') {
       return res.status(400).json({ error: 'establishmentId is required.' });
     }
 
@@ -614,39 +668,42 @@ router.get(
 
     res.write(`data: ${JSON.stringify({ type: 'connected', establishmentId })}\n\n`);
 
-    const subscriber = new Redis({
-      host: process.env.REDIS_HOST || '127.0.0.1',
-      port: parseInt(process.env.REDIS_PORT || '6379', 10),
-    });
+    const isSystemAdmin = req.user?.role === 'admin';
 
-    await subscriber.subscribe('whatsapp-chat-updates');
+    // Assina o broker compartilhado (uma única conexão Redis por processo) em vez
+    // de abrir uma conexão nova a cada requisição SSE.
+    const unsubscribe = subscribeToChatUpdates((data) => {
+      // Só o super admin recebe o fluxo global ('all'); os demais ficam restritos
+      // ao próprio estabelecimento, mesmo que forjem o parâmetro da URL.
+      const allowed = isSystemAdmin
+        ? establishmentId === 'all' || data.establishmentId === establishmentId
+        : data.establishmentId === establishmentId;
 
-    const messageHandler = (channel: string, message: string) => {
-      if (channel === 'whatsapp-chat-updates') {
-        try {
-          const data = JSON.parse(message);
-          if (establishmentId === 'all' || data.establishmentId === establishmentId || req.user?.role === 'admin') {
-            res.write(`data: ${message}\n\n`);
-          }
-        } catch (e) {
-          // ignore error
-        }
+      if (!allowed) return;
+
+      try {
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+      } catch {
+        // Conexão já encerrada pelo cliente.
       }
-    };
-
-    subscriber.on('message', messageHandler);
+    });
 
     // Keep SSE connection alive with 15s heartbeat pings
     const pingInterval = setInterval(() => {
-      res.write(': ping\n\n');
+      try {
+        res.write(': ping\n\n');
+      } catch {
+        // ignore
+      }
     }, 15000);
 
-    req.on('close', () => {
+    const cleanup = () => {
       clearInterval(pingInterval);
-      subscriber.off('message', messageHandler);
-      subscriber.unsubscribe('whatsapp-chat-updates');
-      subscriber.quit().catch(() => {});
-    });
+      unsubscribe();
+    };
+
+    req.on('close', cleanup);
+    res.on('close', cleanup);
   }
 );
 
@@ -654,10 +711,267 @@ router.get(
 // SUPER ADMIN & METRICS ROUTES
 // ==========================================
 
+// ==========================================
+// EXECUTIVE ANALYTICS, COMMISSIONS & CAMPAIGNS
+// ==========================================
+
+router.get(
+  '/establishments/:establishmentId/executive-analytics',
+  verifyToken,
+  checkEstablishmentAccess,
+  requireRole(['owner', 'admin']),
+  async (req: AuthenticatedRequest, res) => {
+    const { establishmentId } = req.params;
+
+    try {
+      // 1. Revenue Today
+      const revTodayRes = await pool.query(
+        `SELECT COALESCE(SUM(s.price), 0) as total, COUNT(a.id) as count
+         FROM appointments a
+         JOIN services s ON a.service_id = s.id
+         WHERE a.establishment_id = $1 
+           AND DATE(a.appointment_time AT TIME ZONE 'UTC') = CURRENT_DATE
+           AND a.status != 'cancelled'`,
+        [establishmentId]
+      );
+
+      // 2. Revenue Month
+      const revMonthRes = await pool.query(
+        `SELECT COALESCE(SUM(s.price), 0) as total, COUNT(a.id) as count
+         FROM appointments a
+         JOIN services s ON a.service_id = s.id
+         WHERE a.establishment_id = $1 
+           AND DATE_TRUNC('month', a.appointment_time AT TIME ZONE 'UTC') = DATE_TRUNC('month', CURRENT_DATE)
+           AND a.status != 'cancelled'`,
+        [establishmentId]
+      );
+
+      // 3. Barber Commissions Breakdown (Default 50% commission rate)
+      const commissionsRes = await pool.query(
+        `SELECT u.id as barber_id, u.name as barber_name, 
+                COUNT(a.id) as total_services, 
+                COALESCE(SUM(s.price), 0) as total_revenue,
+                ROUND(COALESCE(SUM(s.price), 0) * 0.50, 2) as commission_earned
+         FROM users u
+         LEFT JOIN appointments a ON u.id = a.barber_id 
+           AND a.establishment_id = $1 
+           AND DATE_TRUNC('month', a.appointment_time AT TIME ZONE 'UTC') = DATE_TRUNC('month', CURRENT_DATE)
+           AND a.status != 'cancelled'
+         LEFT JOIN services s ON a.service_id = s.id
+         WHERE u.establishment_id = $1 AND u.role IN ('owner', 'admin', 'barber')
+         GROUP BY u.id, u.name
+         ORDER BY total_revenue DESC`,
+        [establishmentId]
+      );
+
+      // 4. Inactive Clients (no appointment in last 30 days)
+      const inactiveClientsRes = await pool.query(
+        `SELECT c.id, c.name, c.phone, MAX(a.appointment_time) as last_appointment
+         FROM clients c
+         LEFT JOIN appointments a ON c.id = a.client_id
+         WHERE c.establishment_id = $1
+         GROUP BY c.id, c.name, c.phone
+         HAVING MAX(a.appointment_time) < NOW() - INTERVAL '30 days' OR MAX(a.appointment_time) IS NULL`,
+        [establishmentId]
+      );
+
+      const revenueToday = parseFloat(revTodayRes.rows[0]?.total || '0');
+      const countToday = parseInt(revTodayRes.rows[0]?.count || '0', 10);
+      const revenueMonth = parseFloat(revMonthRes.rows[0]?.total || '0');
+      const countMonth = parseInt(revMonthRes.rows[0]?.count || '0', 10);
+
+      // Occupancy Rate estimate (assuming 16 slots per barber/day)
+      const totalBarbers = commissionsRes.rows.length || 1;
+      const totalCapacityToday = totalBarbers * 16;
+      const occupancyRate = Math.min(100, Math.round((countToday / Math.max(1, totalCapacityToday)) * 100));
+
+      return res.json({
+        revenueToday,
+        countToday,
+        revenueMonth,
+        countMonth,
+        occupancyRate,
+        barberCommissions: commissionsRes.rows.map(r => ({
+          barberId: r.barber_id,
+          barberName: r.barber_name,
+          totalServices: parseInt(r.total_services, 10),
+          totalRevenue: parseFloat(r.total_revenue),
+          commissionEarned: parseFloat(r.commission_earned),
+          commissionRate: 50
+        })),
+        inactiveClientsCount: inactiveClientsRes.rows.length,
+        inactiveClients: inactiveClientsRes.rows
+      });
+    } catch (err) {
+      console.error('Executive analytics error:', err);
+      return res.status(500).json({ error: 'Erro ao buscar métricas.' });
+    }
+  }
+);
+
+router.post(
+  '/establishments/:establishmentId/campaigns/reengage-inactive',
+  verifyToken,
+  checkEstablishmentAccess,
+  requireRole(['owner', 'admin']),
+  async (req: AuthenticatedRequest, res) => {
+    const establishmentId = String(req.params.establishmentId);
+    const { customMessage } = req.body || {};
+
+    if (customMessage !== undefined && typeof customMessage !== 'string') {
+      return res.status(400).json({ error: 'Mensagem personalizada inválida.' });
+    }
+
+    try {
+      // Find inactive clients
+      const inactiveRes = await pool.query(
+        `SELECT c.name, c.phone
+         FROM clients c
+         LEFT JOIN appointments a ON c.id = a.client_id
+         WHERE c.establishment_id = $1
+         GROUP BY c.id, c.name, c.phone
+         HAVING MAX(a.appointment_time) < NOW() - INTERVAL '30 days' OR MAX(a.appointment_time) IS NULL`,
+        [establishmentId]
+      );
+
+      const clients = inactiveRes.rows;
+      if (clients.length === 0) {
+        return res.json({ message: 'Nenhum cliente inativo encontrado.', count: 0 });
+      }
+
+      // Responde imediatamente. O loop antigo segurava a requisição por 1 segundo
+      // por cliente — com 300 contatos a conexão estourava o timeout do proxy e o
+      // usuário via um erro apesar de a campanha estar rodando.
+      res.json({
+        message: `Campanha de reativação iniciada para ${clients.length} clientes inativos.`,
+        count: clients.length,
+        estimated_seconds: clients.length,
+      });
+
+      void (async () => {
+        for (const client of clients) {
+          const text = customMessage && customMessage.trim() !== ''
+            ? customMessage.replace(/{nome}/g, client.name)
+            : `Olá ${client.name}! 💈 Sentimos sua falta na barbearia! Que tal agendar seu corte para esta semana? É só responder essa mensagem ou agendar pelo nosso link!`;
+
+          try {
+            await sendManualMessage(establishmentId, client.phone, text);
+          } catch (sendErr) {
+            console.error(`[ReengageCampaign] Falha ao enviar para ${client.phone}:`, sendErr);
+          }
+          await new Promise((r) => setTimeout(r, 1000)); // Delay to prevent spam blocks
+        }
+        console.log(`[ReengageCampaign] Campanha do estabelecimento ${establishmentId} finalizada.`);
+      })().catch((err) => console.error('[ReengageCampaign] Erro em background:', err));
+    } catch (err) {
+      console.error('Re-engagement campaign error:', err);
+      if (!res.headersSent) {
+        return res.status(500).json({ error: 'Erro ao disparar campanha.' });
+      }
+    }
+  }
+);
+
+router.get(
+  '/establishments/:establishmentId/barbers/my-today',
+  verifyToken,
+  checkEstablishmentAccess,
+  requireRole(['owner', 'admin', 'barber']),
+  async (req: AuthenticatedRequest, res) => {
+    const { establishmentId } = req.params;
+    const barberId = req.user?.id;
+
+    try {
+      const appointmentsRes = await pool.query(
+        `SELECT a.id, a.appointment_time, a.status, s.name as service_name, s.price as service_price,
+                c.name as client_name, c.phone as client_phone
+         FROM appointments a
+         JOIN services s ON a.service_id = s.id
+         JOIN clients c ON a.client_id = c.id
+         WHERE a.establishment_id = $1 AND a.barber_id = $2
+           AND DATE(a.appointment_time AT TIME ZONE 'UTC') = CURRENT_DATE
+         ORDER BY a.appointment_time ASC`,
+        [establishmentId, barberId]
+      );
+
+      const totalEarningsToday = appointmentsRes.rows
+        .filter(r => r.status !== 'cancelled')
+        .reduce((acc, r) => acc + (parseFloat(r.service_price) * 0.50), 0);
+
+      return res.json({
+        appointments: appointmentsRes.rows,
+        totalEarningsToday,
+        totalServicesToday: appointmentsRes.rows.filter(r => r.status !== 'cancelled').length
+      });
+    } catch (err) {
+      console.error('Barber today schedule error:', err);
+      return res.status(500).json({ error: 'Erro ao buscar agenda do barbeiro.' });
+    }
+  }
+);
+
 // Super Admin user and establishment management
 router.get('/admin/users', verifyToken, requireRole(['admin']), listAllUsers);
 router.post('/admin/users/:userId/change-password', verifyToken, requireRole(['admin']), changeUserPassword);
 router.post('/admin/establishments', verifyToken, requireRole(['admin']), registerOwner);
+
+// Comunicado global para todos os proprietários (Super Admin).
+//
+// O painel chamava `POST /api/whatsapp/send`, uma rota que nunca existiu — e ainda
+// passava um objeto onde `apiRequest` espera o verbo HTTP. O `catch` vazio dentro
+// do laço engolia o 404, então o admin via "enviado para 0 proprietários" sem
+// qualquer pista do motivo. Agora há um endpoint real, com um único request.
+router.post(
+  '/admin/broadcast',
+  verifyToken,
+  requireRole(['admin']),
+  async (req: AuthenticatedRequest, res) => {
+    const { message } = req.body || {};
+
+    if (typeof message !== 'string' || message.trim().length === 0) {
+      return res.status(400).json({ error: 'A mensagem do comunicado é obrigatória.' });
+    }
+
+    if (message.length > 4000) {
+      return res.status(400).json({ error: 'A mensagem excede o limite de 4000 caracteres.' });
+    }
+
+    try {
+      const ownersRes = await pool.query(
+        `SELECT u.phone, u.establishment_id
+         FROM users u
+         JOIN establishments e ON e.id = u.establishment_id
+         WHERE u.role = 'owner' AND u.is_active = TRUE
+           AND e.is_active = TRUE
+           AND u.phone IS NOT NULL AND u.phone <> ''`
+      );
+
+      const owners = ownersRes.rows;
+      if (owners.length === 0) {
+        return res.json({ message: 'Nenhum proprietário elegível encontrado.', count: 0, total: 0 });
+      }
+
+      const text = `📢 *AVISO DA PLATAFORMA BARBERHUB*\n\n${message.trim()}\n\n_Atenciosamente, Equipe BarberHub_`;
+
+      let queued = 0;
+      for (const owner of owners) {
+        // Enviado pela sessão master do sistema para não depender de cada
+        // barbearia ter o próprio WhatsApp conectado.
+        const ok = await sendOrchestratedMessage(SYSTEM_ESTABLISHMENT_ID, owner.phone, text);
+        if (ok) queued++;
+      }
+
+      return res.json({
+        message: `Comunicado enfileirado para ${queued} de ${owners.length} proprietários.`,
+        count: queued,
+        total: owners.length,
+      });
+    } catch (err) {
+      console.error('Admin broadcast error:', err);
+      return res.status(500).json({ error: 'Erro ao enviar comunicado.' });
+    }
+  }
+);
 
 // Super Admin WhatsApp sessions management
 router.get('/admin/whatsapp-sessions', verifyToken, requireRole(['admin']), listWhatsAppSessions);
@@ -679,14 +993,16 @@ router.get('/admin/metrics', verifyToken, requireRole(['admin']), getGlobalMetri
 // ==========================================
 // CLIENT PORTAL ROUTES
 // ==========================================
-router.post('/client/auth', authClient);
+// `authClient` emite um token de 30 dias só com o telefone; sem rate limit era
+// possível varrer números sequencialmente e coletar tokens em massa.
+router.post('/client/auth', authRateLimiter, authClient);
 router.get('/client/dashboard', verifyToken, requireRole(['client']), getClientData);
 router.get('/client/establishments/:establishmentId/details', verifyToken, requireRole(['client']), getEstablishmentDetails);
-router.post('/client/bookings', verifyToken, requireRole(['client']), clientBookAppointment);
-router.put('/client/bookings/:bookingId/reschedule', verifyToken, requireRole(['client']), rescheduleBooking);
+router.post('/client/bookings', verifyToken, requireRole(['client']), apiRateLimiter, clientBookAppointment);
+router.put('/client/bookings/:bookingId/reschedule', verifyToken, requireRole(['client']), apiRateLimiter, rescheduleBooking);
 router.post('/client/bookings/:bookingId/cancel', verifyToken, requireRole(['client']), cancelClientBooking);
 router.post('/client/bookings/cancel-all', verifyToken, requireRole(['client']), cancelAllClientBookings);
 router.post('/client/feedbacks', verifyToken, requireRole(['client']), createFeedback);
-router.post('/client/subscribe', verifyToken, requireRole(['client']), subscribeToPlan);
+router.post('/client/subscribe', verifyToken, requireRole(['client']), apiRateLimiter, subscribeToPlan);
 
 export default router;

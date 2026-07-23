@@ -3,22 +3,18 @@ import jwt from 'jsonwebtoken';
 import pool from '../config/db';
 import { sendOrchestratedMessage } from '../services/whatsappManager';
 import { generateFutureBookingsForPlan } from './planController';
-
-const JWT_SECRET = process.env.JWT_SECRET || 'super-barber-secret-key-change-it';
-
-// Helper to format phone numbers
-const formatPhone = (phone: string) => {
-  let clean = phone.replace(/\D/g, '').trim();
-  if (clean.startsWith('55')) {
-    clean = clean.substring(2);
-  }
-  if (clean.length === 11 && clean[2] === '9') {
-    clean = clean.substring(0, 2) + clean.substring(3);
-  }
-  return '55' + clean;
-};
+import { JWT_SECRET, JWT_CLIENT_EXPIRATION } from '../config/jwt';
+import { normalizePhone } from '../utils/phone';
+import { formatZoned } from '../utils/datetime';
 
 // 1. Client Authentication & Registry (Reverted back to no-OTP simple access)
+//
+// ATENÇÃO (aceito conscientemente pelo produto): este endpoint emite um token de
+// 30 dias apenas com o número de telefone, sem prova de posse da linha. Quem
+// souber o telefone de um cliente acessa histórico, remarca e cancela os
+// agendamentos dele. A mitigação definitiva é enviar um código de 6 dígitos por
+// WhatsApp (as colunas `auth_code`/`auth_code_expires_at` já existem no schema).
+// Enquanto isso não volta, a rota está sob rate limit dedicado em routes.ts.
 export const authClient = async (req: Request, res: Response) => {
   const { phone, name } = req.body;
 
@@ -26,44 +22,55 @@ export const authClient = async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Phone number is required.' });
   }
 
-  const cleanPhone = formatPhone(phone);
+  const cleanPhone = normalizePhone(phone);
+
+  if (cleanPhone.length < 12) {
+    return res.status(400).json({ error: 'Telefone inválido. Informe DDD + número.' });
+  }
 
   try {
-    // Check if client exists
+    // Um mesmo telefone pode ter vários registros (um por barbearia + o global do
+    // portal). Sem ORDER BY, o Postgres devolvia uma linha arbitrária e o cliente
+    // logava ora em um cadastro, ora em outro — perdendo o histórico. Fixamos a
+    // preferência: o registro global do portal (establishment_id IS NULL) e, na
+    // falta dele, o mais antigo.
     const clientRes = await pool.query(
-      'SELECT id, name, phone FROM clients WHERE phone = $1',
+      `SELECT id, name, phone FROM clients
+       WHERE phone = $1
+       ORDER BY (establishment_id IS NULL) DESC, created_at ASC
+       LIMIT 1`,
       [cleanPhone]
     );
 
     if (clientRes.rows.length > 0) {
       const client = clientRes.rows[0];
-      
+
       // If client exists, generate token
       const token = jwt.sign(
         { id: client.id, phone: client.phone, name: client.name, role: 'client' },
         JWT_SECRET,
-        { expiresIn: '30d' }
+        { expiresIn: JWT_CLIENT_EXPIRATION }
       );
 
       return res.json({ token, client });
     }
 
     // Client does not exist. If name is not provided, request registry
-    if (!name) {
+    if (!name || String(name).trim().length < 2) {
       return res.json({ exists: false, message: 'Client not registered yet.' });
     }
 
     // Create client
     const newClient = await pool.query(
       'INSERT INTO clients (name, phone) VALUES ($1, $2) RETURNING id, name, phone',
-      [name.trim(), cleanPhone]
+      [String(name).trim().slice(0, 255), cleanPhone]
     );
 
     const client = newClient.rows[0];
     const token = jwt.sign(
       { id: client.id, phone: client.phone, name: client.name, role: 'client' },
       JWT_SECRET,
-      { expiresIn: '30d' }
+      { expiresIn: JWT_CLIENT_EXPIRATION }
     );
 
     return res.json({ token, client });
@@ -73,15 +80,36 @@ export const authClient = async (req: Request, res: Response) => {
   }
 };
 
+/**
+ * Um mesmo cliente tem um registro por barbearia (`clients` é multi-tenant), todos
+ * amarrados ao mesmo telefone. O painel listava agendamentos de TODOS esses
+ * registros, mas cancelar/remarcar só considerava `req.user.id` — o cliente via o
+ * agendamento e recebia "not found or unauthorized" ao tentar mexer nele.
+ *
+ * Esta função devolve o conjunto de IDs que pertencem ao telefone do token (que é
+ * assinado pelo servidor), preservando o isolamento entre clientes distintos.
+ */
+async function getOwnedClientIds(req: any): Promise<string[]> {
+  const phone = normalizePhone(req.user?.phone);
+  const selfId = req.user?.id;
+
+  if (!phone) return selfId ? [selfId] : [];
+
+  const rows = await pool.query('SELECT id FROM clients WHERE phone = $1', [phone]);
+  const ids = rows.rows.map((r) => r.id);
+
+  // Garante que o próprio id do token esteja presente mesmo se o telefone tiver
+  // sido alterado no cadastro depois da emissão.
+  if (selfId && !ids.includes(selfId)) ids.push(selfId);
+
+  return ids;
+}
+
 // 2. Fetch Client Info and Dashboard Data
 export const getClientData = async (req: any, res: Response) => {
-  const clientId = req.user.id;
-  const phone = req.user.phone;
-
   try {
     // Fetch all client IDs associated with this phone number to aggregate bookings
-    const clientIdsRes = await pool.query('SELECT id FROM clients WHERE phone = $1', [phone]);
-    const clientIds = clientIdsRes.rows.map(r => r.id);
+    const clientIds = await getOwnedClientIds(req);
 
     // 1. Fetch bookings
     const bookingsRes = await pool.query(
@@ -168,7 +196,6 @@ export const getEstablishmentDetails = async (req: Request, res: Response) => {
 
 // 4. Booking rescheduling
 export const rescheduleBooking = async (req: any, res: Response) => {
-  const clientId = req.user.id;
   const { bookingId } = req.params;
   const { newTime } = req.body; // ISO String
 
@@ -178,12 +205,25 @@ export const rescheduleBooking = async (req: any, res: Response) => {
 
   const targetDate = new Date(newTime);
   const now = new Date();
-  
+
+  if (isNaN(targetDate.getTime())) {
+    return res.status(400).json({ error: 'Data de agendamento inválida.' });
+  }
+
   if (targetDate.getTime() <= now.getTime()) {
     return res.status(400).json({ error: 'New appointment date must be in the future.' });
   }
 
+  // Limite superior: sem isto um cliente pode empurrar o horário para o ano 9999
+  // e travar a agenda do barbeiro indefinidamente.
+  const maxDate = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000);
+  if (targetDate > maxDate) {
+    return res.status(400).json({ error: 'Só é possível agendar com até 1 ano de antecedência.' });
+  }
+
   try {
+    const clientIds = await getOwnedClientIds(req);
+
     // 1. Fetch current appointment details and verify ownership
     const apptCheck = await pool.query(
       `SELECT a.id, a.appointment_time, a.status, a.barber_id, a.establishment_id,
@@ -192,8 +232,8 @@ export const rescheduleBooking = async (req: any, res: Response) => {
        JOIN services s ON a.service_id = s.id
        JOIN clients c ON a.client_id = c.id
        JOIN users b ON a.barber_id = b.id
-       WHERE a.id = $1 AND a.client_id = $2`,
-      [bookingId, clientId]
+       WHERE a.id = $1 AND a.client_id = ANY($2)`,
+      [bookingId, clientIds]
     );
 
     if (apptCheck.rows.length === 0) {
@@ -234,8 +274,7 @@ export const rescheduleBooking = async (req: any, res: Response) => {
 
     // 5. Notify via WhatsApp
     try {
-      const dateStr = targetDate.toLocaleDateString('pt-BR');
-      const timeStr = targetDate.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+      const { date: dateStr, time: timeStr } = formatZoned(targetDate);
       const msgText = `🔄 *Agendamento Alterado*\n\nOlá, *${appt.client_name}*!\n\nSeu horário com o profissional *${appt.barber_name}* foi remarcado para o dia *${dateStr}* às *${timeStr}* com sucesso!`;
       await sendOrchestratedMessage(String(appt.establishment_id), req.user.phone, msgText);
     } catch (e) {
@@ -251,18 +290,19 @@ export const rescheduleBooking = async (req: any, res: Response) => {
 
 // 5. Cancel individual appointment
 export const cancelClientBooking = async (req: any, res: Response) => {
-  const clientId = req.user.id;
   const { bookingId } = req.params;
 
   try {
+    const clientIds = await getOwnedClientIds(req);
+
     const apptCheck = await pool.query(
       `SELECT a.id, a.appointment_time, a.status, a.establishment_id,
               c.name as client_name, b.name as barber_name
        FROM appointments a
        JOIN clients c ON a.client_id = c.id
        JOIN users b ON a.barber_id = b.id
-       WHERE a.id = $1 AND a.client_id = $2`,
-      [bookingId, clientId]
+       WHERE a.id = $1 AND a.client_id = ANY($2)`,
+      [bookingId, clientIds]
     );
 
     if (apptCheck.rows.length === 0) {
@@ -270,6 +310,14 @@ export const cancelClientBooking = async (req: any, res: Response) => {
     }
 
     const appt = apptCheck.rows[0];
+
+    if (appt.status === 'cancelled') {
+      return res.status(400).json({ error: 'Este agendamento já foi cancelado.' });
+    }
+
+    if (appt.status === 'completed') {
+      return res.status(400).json({ error: 'Não é possível cancelar um atendimento já concluído.' });
+    }
 
     const apptTime = new Date(appt.appointment_time);
     const now = new Date();
@@ -279,15 +327,22 @@ export const cancelClientBooking = async (req: any, res: Response) => {
       return res.status(400).json({ error: 'Cannot cancel appointments with less than 2 hours of anticipation.' });
     }
 
-    await pool.query(
-      `UPDATE appointments SET status = 'cancelled', cancellation_reason = 'Cancelado pelo cliente via Portal' WHERE id = $1`,
+    // O WHERE repete o filtro de status para que dois cliques simultâneos não
+    // disparem duas notificações de cancelamento (race condition).
+    const updateRes = await pool.query(
+      `UPDATE appointments SET status = 'cancelled', cancellation_reason = 'Cancelado pelo cliente via Portal'
+       WHERE id = $1 AND status <> 'cancelled'
+       RETURNING id`,
       [bookingId]
     );
 
+    if (updateRes.rows.length === 0) {
+      return res.status(400).json({ error: 'Este agendamento já foi cancelado.' });
+    }
+
     // Notify
     try {
-      const dateStr = apptTime.toLocaleDateString('pt-BR');
-      const timeStr = apptTime.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+      const { date: dateStr, time: timeStr } = formatZoned(apptTime);
       const msgText = `❌ *Agendamento Cancelado*\n\nOlá, *${appt.client_name}*!\n\nSeu agendamento para o dia *${dateStr}* às *${timeStr}* com *${appt.barber_name}* foi cancelado com sucesso.`;
       await sendOrchestratedMessage(String(appt.establishment_id), req.user.phone, msgText);
     } catch (e) {
@@ -303,14 +358,14 @@ export const cancelClientBooking = async (req: any, res: Response) => {
 
 // 6. Cancel all future appointments
 export const cancelAllClientBookings = async (req: any, res: Response) => {
-  const clientId = req.user.id;
-
   try {
+    const clientIds = await getOwnedClientIds(req);
+
     const apptsRes = await pool.query(
-      `SELECT a.id, a.appointment_time, a.establishment_id 
+      `SELECT a.id, a.appointment_time, a.establishment_id
        FROM appointments a
-       WHERE a.client_id = $1 AND a.appointment_time > NOW() AND a.status = 'confirmed'`,
-      [clientId]
+       WHERE a.client_id = ANY($1) AND a.appointment_time > NOW() AND a.status = 'confirmed'`,
+      [clientIds]
     );
 
     if (apptsRes.rows.length === 0) {
@@ -358,7 +413,6 @@ export const cancelAllClientBookings = async (req: any, res: Response) => {
 
 // 7. Submit Feedback / Rating for completed service
 export const createFeedback = async (req: any, res: Response) => {
-  const clientId = req.user.id;
   const { appointmentId, rating, comment } = req.body;
 
   const parsedRating = parseInt(rating, 10);
@@ -366,35 +420,40 @@ export const createFeedback = async (req: any, res: Response) => {
     return res.status(400).json({ error: 'Rating must be an integer between 1 and 5.' });
   }
 
+  if (comment !== undefined && comment !== null && typeof comment !== 'string') {
+    return res.status(400).json({ error: 'Comentário inválido.' });
+  }
+
   try {
+    const clientIds = await getOwnedClientIds(req);
+
     // Verify booking is completed and belongs to client
     const apptCheck = await pool.query(
-      `SELECT id, establishment_id FROM appointments WHERE id = $1 AND client_id = $2 AND status = 'completed'`,
-      [appointmentId, clientId]
+      `SELECT id, client_id, establishment_id FROM appointments
+       WHERE id = $1 AND client_id = ANY($2) AND status = 'completed'`,
+      [appointmentId, clientIds]
     );
 
     if (apptCheck.rows.length === 0) {
       return res.status(400).json({ error: 'Feedback can only be submitted for completed and paid appointments.' });
     }
 
-    // Check if feedback already exists
-    const feedCheck = await pool.query(
-      'SELECT id FROM feedbacks WHERE appointment_id = $1',
-      [appointmentId]
-    );
+    const { establishment_id: estId, client_id: apptClientId } = apptCheck.rows[0];
 
-    if (feedCheck.rows.length > 0) {
-      return res.status(400).json({ error: 'Feedback already submitted for this appointment.' });
+    // O índice único em feedbacks(appointment_id) é a defesa real contra duplicidade:
+    // o SELECT-then-INSERT anterior permitia dois envios simultâneos passarem juntos.
+    try {
+      await pool.query(
+        `INSERT INTO feedbacks (appointment_id, client_id, establishment_id, rating, comment)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [appointmentId, apptClientId, estId, parsedRating, comment ? String(comment).trim().slice(0, 2000) : null]
+      );
+    } catch (insertErr: any) {
+      if (insertErr?.code === '23505') {
+        return res.status(400).json({ error: 'Feedback already submitted for this appointment.' });
+      }
+      throw insertErr;
     }
-
-    const estId = apptCheck.rows[0].establishment_id;
-
-    // Insert feedback
-    await pool.query(
-      `INSERT INTO feedbacks (appointment_id, client_id, establishment_id, rating, comment)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [appointmentId, clientId, estId, parsedRating, comment ? comment.trim() : null]
-    );
 
     return res.json({ message: 'Feedback submitted successfully. Thank you!' });
   } catch (error) {
@@ -415,11 +474,36 @@ export const clientBookAppointment = async (req: any, res: Response) => {
   const targetDate = new Date(appointmentTime);
   const now = new Date();
 
+  if (isNaN(targetDate.getTime())) {
+    return res.status(400).json({ error: 'Data de agendamento inválida.' });
+  }
+
   if (targetDate.getTime() <= now.getTime()) {
     return res.status(400).json({ error: 'Appointment date must be in the future.' });
   }
 
+  const maxDate = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000);
+  if (targetDate > maxDate) {
+    return res.status(400).json({ error: 'Só é possível agendar com até 1 ano de antecedência.' });
+  }
+
   try {
+    // O barbeiro precisa pertencer ao estabelecimento informado e o estabelecimento
+    // precisa estar ativo. Sem esta checagem, o cliente podia enviar qualquer par
+    // (establishmentId, barberId) e criar agendamentos cruzados entre barbearias.
+    const barberRes = await pool.query(
+      `SELECT u.id
+       FROM users u
+       JOIN establishments e ON e.id = u.establishment_id
+       WHERE u.id = $1 AND u.establishment_id = $2 AND u.role = 'barber'
+         AND u.is_active = TRUE AND e.is_active = TRUE`,
+      [barberId, establishmentId]
+    );
+
+    if (barberRes.rows.length === 0) {
+      return res.status(400).json({ error: 'Profissional indisponível para este estabelecimento.' });
+    }
+
     // Service duration
     const serviceRes = await pool.query(
       'SELECT name, price, duration_minutes FROM services WHERE id = $1 AND establishment_id = $2',
@@ -448,13 +532,23 @@ export const clientBookAppointment = async (req: any, res: Response) => {
       return res.status(400).json({ error: 'This time slot is no longer available.' });
     }
 
-    // Insert booking
-    const result = await pool.query(
-      `INSERT INTO appointments (establishment_id, barber_id, client_id, service_id, appointment_time, status)
-       VALUES ($1, $2, $3, $4, $5, 'confirmed')
-       RETURNING id`,
-      [establishmentId, barberId, clientId, serviceId, targetDate.toISOString()]
-    );
+    // Insert booking. O índice único parcial em (barber_id, appointment_time) é o
+    // que realmente impede a dupla reserva: a checagem de colisão acima é apenas
+    // uma cortesia de UX e sozinha sofre com TOCTOU sob concorrência.
+    let result;
+    try {
+      result = await pool.query(
+        `INSERT INTO appointments (establishment_id, barber_id, client_id, service_id, appointment_time, status)
+         VALUES ($1, $2, $3, $4, $5, 'confirmed')
+         RETURNING id`,
+        [establishmentId, barberId, clientId, serviceId, targetDate.toISOString()]
+      );
+    } catch (insertErr: any) {
+      if (insertErr?.code === '23505') {
+        return res.status(409).json({ error: 'This time slot is no longer available.' });
+      }
+      throw insertErr;
+    }
 
     // Fetch names for WhatsApp
     const namesRes = await pool.query(
@@ -468,8 +562,7 @@ export const clientBookAppointment = async (req: any, res: Response) => {
 
     // Notify
     try {
-      const dateStr = targetDate.toLocaleDateString('pt-BR');
-      const timeStr = targetDate.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+      const { date: dateStr, time: timeStr } = formatZoned(targetDate);
       const msgText = `📅 *Novo Agendamento Realizado*\n\nOlá, *${req.user.name}*!\n\nVocê agendou o serviço *${service.name}* na *${details.establishment_name}*:\n\n*Profissional:* ${details.barber_name}\n*Data:* ${dateStr}\n*Horário:* ${timeStr}\n*Valor:* R$ ${parseFloat(service.price).toFixed(2)}\n\nEsperamos você!`;
       await sendOrchestratedMessage(String(establishmentId), req.user.phone, msgText);
     } catch (e) {
@@ -499,6 +592,17 @@ export const subscribeToPlan = async (req: any, res: Response) => {
     return res.status(400).json({ error: 'Invalid plan type.' });
   }
 
+  // `preferred_time` entra numa coluna TIME e `preferred_day_of_week` tem CHECK 0..6.
+  // Validar aqui evita que um valor fora de faixa vire erro 500 opaco no banco.
+  if (typeof preferredTime !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/.test(preferredTime)) {
+    return res.status(400).json({ error: 'Horário preferido inválido. Use o formato HH:MM.' });
+  }
+
+  const parsedDayOfWeek = Number(preferredDayOfWeek);
+  if (!Number.isInteger(parsedDayOfWeek) || parsedDayOfWeek < 0 || parsedDayOfWeek > 6) {
+    return res.status(400).json({ error: 'Dia da semana inválido (0 = domingo até 6 = sábado).' });
+  }
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -525,11 +629,11 @@ export const subscribeToPlan = async (req: any, res: Response) => {
                      preferred_day_of_week = EXCLUDED.preferred_day_of_week,
                      is_active = EXCLUDED.is_active
        RETURNING id, plan_type, preferred_time, preferred_day_of_week, is_active`,
-      [establishmentId, clientId, barberId, planType, preferredTime, preferredDayOfWeek]
+      [establishmentId, clientId, barberId, planType, preferredTime, parsedDayOfWeek]
     );
 
     // 3. Run instant recurrence scheduler generator for the next 4 weeks
-    await generateFutureBookingsForPlan(client, String(establishmentId), clientId, barberId, planType, preferredTime, preferredDayOfWeek);
+    await generateFutureBookingsForPlan(client, String(establishmentId), clientId, barberId, planType, preferredTime, parsedDayOfWeek);
 
     // Get establishment name
     const estNameRes = await client.query('SELECT name FROM establishments WHERE id = $1', [establishmentId]);

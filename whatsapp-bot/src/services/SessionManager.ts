@@ -24,6 +24,7 @@ export class SessionManager {
   private sessions = new Map<string, WASocket>();
   private sessionStatuses = new Map<string, SessionStatus>();
   private processedMessages = new Set<string>();
+  private heartbeats = new Map<string, NodeJS.Timeout>();
   private pool: Pool;
   private instanceId: string;
 
@@ -40,15 +41,48 @@ export class SessionManager {
   }
 
   // Acquire Redis Distributed Lock for a session so only one Gateway process manages it
+  //
+  // A versão anterior fazia um SET incondicional e retornava `true` sempre: o
+  // "lock distribuído" só sobrescrevia o dono anterior. Com duas réplicas do
+  // gateway, ambas abriam a mesma sessão Baileys com as mesmas credenciais, o que
+  // faz o WhatsApp invalidar a sessão e derrubar o bot da barbearia. `NX` torna a
+  // aquisição realmente exclusiva.
   private async acquireSessionLock(establishmentId: string): Promise<boolean> {
     const lockKey = `lock:session:${establishmentId}`;
-    await redisConnection.set(lockKey, this.instanceId, 'EX', 30);
-    return true;
+    const result = await redisConnection.set(lockKey, this.instanceId, 'EX', 30, 'NX');
+
+    if (result === 'OK') return true;
+
+    // Reentrância: se o lock já é desta instância, seguimos em frente.
+    const owner = await redisConnection.get(lockKey);
+    return owner === this.instanceId;
   }
 
   private async refreshSessionLock(establishmentId: string): Promise<void> {
     const lockKey = `lock:session:${establishmentId}`;
-    await redisConnection.expire(lockKey, 30);
+    // Só renova se ainda formos o dono — evita estender o lock de outra instância.
+    const owner = await redisConnection.get(lockKey);
+    if (owner === this.instanceId) {
+      await redisConnection.expire(lockKey, 30);
+    }
+  }
+
+  /** Encerra o heartbeat de renovação do lock de uma sessão. */
+  private clearHeartbeat(establishmentId: string): void {
+    const timer = this.heartbeats.get(establishmentId);
+    if (timer) {
+      clearInterval(timer);
+      this.heartbeats.delete(establishmentId);
+    }
+  }
+
+  /** Libera o lock apenas se ele ainda pertencer a esta instância. */
+  private async releaseSessionLock(establishmentId: string): Promise<void> {
+    const lockKey = `lock:session:${establishmentId}`;
+    const owner = await redisConnection.get(lockKey);
+    if (owner === this.instanceId) {
+      await redisConnection.del(lockKey);
+    }
   }
 
   public getSession(establishmentId: string): WASocket | undefined {
@@ -71,10 +105,12 @@ export class SessionManager {
       }
       try { (existingSock as any)?.end(undefined); } catch (e) {}
       this.sessions.delete(establishmentId);
+      this.clearHeartbeat(establishmentId);
     }
 
-    // Always clear stale Redis lock for disconnected or reconnecting sessions
-    await redisConnection.del(`lock:session:${establishmentId}`);
+    // Libera apenas o lock desta instância. O `del` incondicional anterior
+    // roubava o lock de outra réplica e anulava a exclusividade.
+    await this.releaseSessionLock(establishmentId);
 
     const acquired = await this.acquireSessionLock(establishmentId);
     if (!acquired) {
@@ -127,17 +163,20 @@ export class SessionManager {
               console.log(`[SessionManager] QR Code expired for establishment ${establishmentId}. Resetting session.`);
               try { sock.end(undefined); } catch (e) {}
               this.sessions.delete(establishmentId);
+              this.clearHeartbeat(establishmentId);
               this.sessionStatuses.set(establishmentId, 'DISCONNECTED');
               await this.pool.query('DELETE FROM whatsapp_auth_states WHERE establishment_id = $1', [establishmentId]);
               await this.updateSessionStatusDB(establishmentId, 'disconnected', null, null);
-              await redisConnection.del(`lock:session:${establishmentId}`);
+              await this.releaseSessionLock(establishmentId);
             }
           }, 60000);
         }
 
         if (connection === 'close') {
           this.sessions.delete(establishmentId);
-          await redisConnection.del(`lock:session:${establishmentId}`);
+          this.clearHeartbeat(establishmentId);
+          if ((sock as any)._qrTimer) clearTimeout((sock as any)._qrTimer);
+          await this.releaseSessionLock(establishmentId);
 
           const error = lastDisconnect?.error as Boom;
           const statusCode = error?.output?.statusCode;
@@ -174,8 +213,20 @@ export class SessionManager {
 
           await this.updateSessionStatusDB(establishmentId, 'connected', null, cleanPhone);
 
-          // Refresh lock heartbeat
-          setInterval(() => this.refreshSessionLock(establishmentId), 10000);
+          // Refresh lock heartbeat.
+          //
+          // Este `setInterval` nunca era guardado nem limpo: cada reconexão criava
+          // mais um timer eterno. Depois de algumas horas de instabilidade de rede,
+          // dezenas deles martelavam o Redis em paralelo e o processo nunca
+          // conseguia encerrar de forma limpa.
+          this.clearHeartbeat(establishmentId);
+          const heartbeat = setInterval(() => {
+            this.refreshSessionLock(establishmentId).catch((err) =>
+              console.error(`[SessionManager] Heartbeat failed for ${establishmentId}:`, err.message)
+            );
+          }, 10000);
+          heartbeat.unref?.();
+          this.heartbeats.set(establishmentId, heartbeat);
         }
       });
 
@@ -262,14 +313,16 @@ export class SessionManager {
     const sock = this.sessions.get(establishmentId);
     if (sock) {
       try {
+        if ((sock as any)._qrTimer) clearTimeout((sock as any)._qrTimer);
         sock.end(undefined);
       } catch (e) {}
       this.sessions.delete(establishmentId);
       this.sessionStatuses.set(establishmentId, 'DISCONNECTED');
     }
+    this.clearHeartbeat(establishmentId);
     await this.pool.query('DELETE FROM whatsapp_auth_states WHERE establishment_id = $1', [establishmentId]);
     await this.updateSessionStatusDB(establishmentId, 'disconnected', null, null);
-    await redisConnection.del(`lock:session:${establishmentId}`);
+    await this.releaseSessionLock(establishmentId);
   }
 
   public async sendMessage(establishmentId: string, phone: string, text: string): Promise<boolean> {
@@ -346,10 +399,13 @@ export class SessionManager {
     console.log('[SessionManager] Gracefully shutting down all active sessions...');
     for (const [establishmentId, sock] of this.sessions.entries()) {
       try {
+        if ((sock as any)._qrTimer) clearTimeout((sock as any)._qrTimer);
         sock.end(undefined);
       } catch (e) {}
-      await redisConnection.del(`lock:session:${establishmentId}`);
+      this.clearHeartbeat(establishmentId);
+      await this.releaseSessionLock(establishmentId);
     }
     this.sessions.clear();
+    this.heartbeats.clear();
   }
 }

@@ -16,7 +16,6 @@ import {
   ChevronRight,
   MapPin,
   Sparkles,
-  ArrowLeft,
   X,
   Menu,
   Home
@@ -104,7 +103,18 @@ export const ClientPortal: React.FC = () => {
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [plans, setPlans] = useState<ClientPlan[]>([]);
   const [establishments, setEstablishments] = useState<Establishment[]>([]);
+  const [loyaltyData, setLoyaltyData] = useState<any>(null);
   const [loadingData, setLoadingData] = useState(false);
+
+  const fetchLoyaltyData = async (userPhone: string) => {
+    if (!userPhone) return;
+    try {
+      const data = await apiRequest(`/client-portal/loyalty/${userPhone}`, 'GET');
+      setLoyaltyData(data);
+    } catch (err: any) {
+      console.error('Fetch loyalty error:', err);
+    }
+  };
 
   // Action / Modal States
   const [activeTab, setActiveTab] = useState<'appointments' | 'book' | 'plans'>('appointments');
@@ -113,7 +123,7 @@ export const ClientPortal: React.FC = () => {
 
   // Booking Flow States
   const [selectedEst, setSelectedEst] = useState<string>('');
-  const [currentPhotoIdx, setCurrentPhotoIdx] = useState<number>(0);
+  const [, setCurrentPhotoIdx] = useState<number>(0);
   const [expandedPhoto, setExpandedPhoto] = useState<string | null>(null);
   const [estDetails, setEstDetails] = useState<{ barbers: Barber[]; services: Service[]; plans: Plan[] } | null>(null);
   const [selectedBarber, setSelectedBarber] = useState('');
@@ -206,8 +216,11 @@ export const ClientPortal: React.FC = () => {
   useEffect(() => {
     if (token) {
       fetchDashboardData();
+      if (clientInfo?.phone) {
+        fetchLoyaltyData(clientInfo.phone);
+      }
     }
-  }, [token]);
+  }, [token, clientInfo?.phone]);
 
   // 2. Fetch specific establishment details for booking flow
   const fetchEstablishmentDetails = async (estId: string) => {
@@ -279,7 +292,6 @@ export const ClientPortal: React.FC = () => {
 
   useEffect(() => {
     if (rescheduleBookingId && rescheduleDate) {
-      const b = bookings.find(x => x.id === rescheduleBookingId);
       const apptRes = rescheduleBookingId;
       // Fetch details
       const fetchApptInfo = async () => {
@@ -893,6 +905,57 @@ export const ClientPortal: React.FC = () => {
           </button>
         </div>
 
+        {/* CARTÃO FIDELIDADE DIGITAL */}
+        {loyaltyData && (
+          <div className="card-premium" style={{ border: '1px solid rgba(212,175,55,0.3)', background: 'linear-gradient(135deg, rgba(212,175,55,0.08) 0%, rgba(18,18,18,0.95) 100%)', padding: '20px', borderRadius: '16px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
+              <div>
+                <h3 style={{ fontSize: '18px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--primary)' }}>
+                  <Sparkles size={20} />
+                  Cartão Fidelidade Digital
+                </h3>
+                <p style={{ color: 'var(--muted)', fontSize: '13px', marginTop: '2px' }}>
+                  {loyaltyData.rewardAvailable 
+                    ? '🎉 Parabéns! Seu 10º agendamento está concluído! Mostre esta tela no caixa para resgatar seu prêmio!'
+                    : `Complete 10 agendamentos e ganhe ${loyaltyData.rewardDescription}`}
+                </p>
+              </div>
+              <span style={{ fontSize: '13px', padding: '6px 14px', borderRadius: '20px', background: 'rgba(212,175,55,0.15)', color: 'var(--primary)', fontWeight: 'bold', border: '1px solid rgba(212,175,55,0.3)' }}>
+                {loyaltyData.stamps} / {loyaltyData.totalNeeded} Selos
+              </span>
+            </div>
+
+            {/* Grid de 10 Selos */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(60px, 1fr))', gap: '10px' }}>
+              {Array.from({ length: 10 }).map((_, idx) => {
+                const isStamped = idx < loyaltyData.stamps;
+                return (
+                  <div 
+                    key={idx}
+                    style={{
+                      height: '60px',
+                      borderRadius: '12px',
+                      background: isStamped ? 'linear-gradient(135deg, var(--primary) 0%, #bda030 100%)' : 'rgba(255,255,255,0.03)',
+                      border: isStamped ? '1px solid var(--primary)' : '1px dashed rgba(255,255,255,0.1)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: isStamped ? '#121212' : 'var(--muted)',
+                      fontWeight: 'bold',
+                      fontSize: '12px',
+                      boxShadow: isStamped ? '0 4px 12px rgba(212,175,55,0.2)' : 'none',
+                      transition: 'all 0.3s'
+                    }}
+                  >
+                    {isStamped ? <Scissors size={20} /> : <span style={{ opacity: 0.4 }}>{idx + 1}º</span>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* TAB CONTENT: APPOINTMENTS */}
         {activeTab === 'appointments' && (
           <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
@@ -1339,7 +1402,7 @@ export const ClientPortal: React.FC = () => {
                       <button 
                         type="button"
                         className={selectedPlanType === 'mensal' ? 'btn-primary' : 'btn-secondary'}
-                        style={{ flex: 1, fontWeight: 'bold', py: '10px', fontSize: '13px' }}
+                        style={{ flex: 1, fontWeight: 'bold', padding: '10px', fontSize: '13px' }}
                         onClick={() => setSelectedPlanType('mensal')}
                       >
                         Mensal (R$ 149,90)
@@ -1347,7 +1410,7 @@ export const ClientPortal: React.FC = () => {
                       <button 
                         type="button"
                         className={selectedPlanType === 'quinzenal' ? 'btn-primary' : 'btn-secondary'}
-                        style={{ flex: 1, fontWeight: 'bold', py: '10px', fontSize: '13px' }}
+                        style={{ flex: 1, fontWeight: 'bold', padding: '10px', fontSize: '13px' }}
                         onClick={() => setSelectedPlanType('quinzenal')}
                       >
                         Quinzenal (R$ 79,90)

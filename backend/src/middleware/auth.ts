@@ -1,11 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
-import dotenv from 'dotenv';
 import pool from '../config/db';
-
-dotenv.config();
-
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
+import { JWT_SECRET } from '../config/jwt';
 
 export interface AuthenticatedRequest extends Request {
   user?: {
@@ -97,14 +93,18 @@ export const checkEstablishmentAccess = async (req: AuthenticatedRequest, res: R
   }
 
   // Extract target establishment ID from params, query, or body
-  const targetEstId = req.params.establishmentId || req.query.establishmentId || req.body.establishment_id;
+  const targetEstId =
+    req.params.establishmentId || req.query.establishmentId || (req.body && req.body.establishment_id);
 
-  if (targetEstId && targetEstId !== userEstId) {
+  if (targetEstId && String(targetEstId) !== String(userEstId)) {
     return res.status(403).json({ error: 'Access denied. You cannot modify resources of another establishment (IDOR Block).' });
   }
 
   // Inject establishment_id into request body/query to enforce safety
   if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {
+    if (!req.body || typeof req.body !== 'object') {
+      req.body = {};
+    }
     req.body.establishment_id = userEstId;
   } else {
     req.query.establishment_id = userEstId;

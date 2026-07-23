@@ -4,14 +4,12 @@ import {
   User, 
   Calendar, 
   Clock, 
-  Phone, 
   CheckCircle2, 
   ArrowRight, 
   ArrowLeft, 
   Scissors,
   Check,
   MapPin,
-  FileText,
   ChevronRight,
   X
 } from 'lucide-react';
@@ -51,7 +49,6 @@ export const ClientBooking: React.FC = () => {
   
   // States
   const [est, setEst] = useState<EstablishmentInfo | null>(null);
-  const [currentPhotoIdx, setCurrentPhotoIdx] = useState<number>(0);
   const [expandedPhoto, setExpandedPhoto] = useState<string | null>(null);
   const [barbers, setBarbers] = useState<BarberInfo[]>([]);
   const [loading, setLoading] = useState(true);

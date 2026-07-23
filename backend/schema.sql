@@ -3,8 +3,11 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- Drop existing tables (in order of dependencies)
 DROP TABLE IF EXISTS feedbacks;
+DROP TABLE IF EXISTS whatsapp_messages;
+DROP TABLE IF EXISTS whatsapp_chats;
 DROP TABLE IF EXISTS whatsapp_auth_states;
 DROP TABLE IF EXISTS whatsapp_sessions;
+DROP TABLE IF EXISTS lid_mappings;
 DROP TABLE IF EXISTS client_plans;
 DROP TABLE IF EXISTS appointments;
 DROP TABLE IF EXISTS barber_services;
@@ -29,6 +32,10 @@ CREATE TABLE establishments (
     logo_url TEXT,
     address TEXT,
     bio TEXT,
+    -- Galeria de fotos usada por establishmentController (SELECT/UPDATE `photos`).
+    -- A coluna faltava no schema: `npm run db:init` gerava um banco em que TODAS as
+    -- rotas de estabelecimento quebravam com "column photos does not exist".
+    photos JSONB DEFAULT '[]'::jsonb,
     is_active BOOLEAN DEFAULT TRUE,
     expires_at TIMESTAMP WITH TIME ZONE DEFAULT (CURRENT_TIMESTAMP + INTERVAL '7 days'),
     bot_active BOOLEAN DEFAULT TRUE,
@@ -123,9 +130,22 @@ CREATE TABLE clients (
     auth_code VARCHAR(6),
     auth_code_expires_at TIMESTAMP,
     auth_session_id UUID,
+    -- Foto de perfil sincronizada do WhatsApp; lida por crmController e
+    -- whatsappManager.getActiveChats. Também faltava no schema.
+    profile_picture_url TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT unique_establishment_phone UNIQUE(establishment_id, phone)
 );
+
+-- `unique_establishment_phone` não impede duplicatas quando establishment_id é NULL
+-- (em SQL, NULL nunca é igual a NULL). Os cadastros do portal do cliente nascem sem
+-- estabelecimento, então sem este índice o mesmo telefone criava vários registros
+-- globais e o login do portal caía ora em um, ora em outro.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_global_phone
+ON clients (phone)
+WHERE establishment_id IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_clients_phone ON clients (phone);
 
 -- Appointments (Bookings)
 CREATE TABLE appointments (
@@ -171,6 +191,43 @@ CREATE TABLE whatsapp_auth_states (
     key_data JSONB NOT NULL,
     PRIMARY KEY (establishment_id, key_type, key_id)
 );
+
+-- Estado da conversa do chatbot por contato.
+-- Esta tabela e `whatsapp_messages` eram usadas pelo bot, pelo painel de atendimento
+-- e pela rotina de limpeza, mas não existiam no schema — um banco criado com
+-- `npm run db:init` subia sem elas e o bot falhava na primeira mensagem recebida.
+CREATE TABLE whatsapp_chats (
+    establishment_id UUID NOT NULL REFERENCES establishments(id) ON DELETE CASCADE,
+    phone VARCHAR(50) NOT NULL,
+    push_name VARCHAR(255),
+    profile_picture_url TEXT,
+    bot_state VARCHAR(20) NOT NULL DEFAULT 'ACTIVE' CHECK (bot_state IN ('IDLE', 'ACTIVE', 'PAUSED')),
+    current_node_id VARCHAR(100) DEFAULT 'welcome',
+    waiting_for_input BOOLEAN DEFAULT FALSE,
+    last_message_time TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (establishment_id, phone)
+);
+
+CREATE INDEX IF NOT EXISTS idx_whatsapp_chats_last_message
+ON whatsapp_chats (last_message_time DESC);
+
+-- Histórico de mensagens exibido no painel de atendimento.
+CREATE TABLE whatsapp_messages (
+    id BIGSERIAL PRIMARY KEY,
+    establishment_id UUID NOT NULL REFERENCES establishments(id) ON DELETE CASCADE,
+    phone VARCHAR(50) NOT NULL,
+    message_text TEXT,
+    from_me BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Suporta tanto a listagem por conversa quanto a limpeza diária por data.
+CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_chat
+ON whatsapp_messages (establishment_id, phone, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_created_at
+ON whatsapp_messages (created_at);
 
 -- Seed Initial Data
 -- 0. Create Master System Establishment (for Super Admin notifications)
@@ -283,13 +340,28 @@ CREATE TABLE feedbacks (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_appointments_barber_time_active 
-ON appointments (barber_id, appointment_time) 
+-- Um feedback por agendamento. O controller fazia SELECT-then-INSERT, que sob dois
+-- envios simultâneos deixava passar duplicatas e inflava a nota média.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_feedbacks_appointment
+ON feedbacks (appointment_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_appointments_barber_time_active
+ON appointments (barber_id, appointment_time)
 WHERE status != 'cancelled';
+
+-- Índices de apoio às consultas mais frequentes (agenda do dia, painel, métricas).
+CREATE INDEX IF NOT EXISTS idx_appointments_establishment_time
+ON appointments (establishment_id, appointment_time);
+
+CREATE INDEX IF NOT EXISTS idx_appointments_client
+ON appointments (client_id);
 
 -- LID to Real JID Phone persistent mappings
 CREATE TABLE IF NOT EXISTS lid_mappings (
     lid VARCHAR(255) PRIMARY KEY,
     phone VARCHAR(255) NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    -- `resolveLidRetroactively` faz UPSERT gravando `updated_at`; a coluna não
+    -- existia e o INSERT falhava, deixando o mapeamento LID -> telefone sem efeito.
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );

@@ -2,6 +2,7 @@ import { Worker, Job } from 'bullmq';
 import Redis from 'ioredis';
 import pool from '../config/db';
 import { outboundQueue } from '../config/redis';
+import { toZonedParts, zonedTimeToUtc } from '../utils/datetime';
 
 const redisHost = process.env.REDIS_HOST || '127.0.0.1';
 const redisPort = parseInt(process.env.REDIS_PORT || '6379', 10);
@@ -226,6 +227,33 @@ export const botWorker = new Worker<InboundJobData>(
 
       const clientInfo = clientCheck.rows[0] || { name: pushName || 'Cliente' };
 
+      // As listas de escolha (barbeiros, serviços, datas, horários) vivem apenas no
+      // cache em memória, mas `current_node_id` é persistido no banco. Após um
+      // restart do worker — ou se o job cair em outra réplica — o cliente ficava
+      // preso: o bot esperava um número referente a uma lista que não existia mais
+      // e respondia "Opção inválida" para sempre. Aqui detectamos esse estado órfão
+      // e reiniciamos a conversa.
+      const requiredList: Record<string, keyof BotSession> = {
+        process_barber_selection: 'barbersList',
+        process_service_selection: 'servicesList',
+        process_date_selection: 'datesList',
+        process_slot_selection: 'slotsList',
+      };
+
+      const needed = requiredList[session.currentNodeId];
+      if (needed && !session[needed]) {
+        console.warn(`[BotWorker] Estado órfão em ${session.currentNodeId} para ${phone}. Reiniciando fluxo.`);
+        session.state = 'ACTIVE';
+        session.currentNodeId = 'welcome';
+        session.waitingForInput = false;
+        await outboundQueue.add('send-whatsapp-message', {
+          establishmentId,
+          phone,
+          text: '🔄 Precisei reiniciar nosso atendimento. Vamos começar de novo!',
+        });
+        await saveSession(establishmentId, phone, session);
+      }
+
       // 2. Welcome & Barber Selection Menu
       if (session.currentNodeId === 'welcome' || session.currentNodeId === 'select_barber' || session.state === 'IDLE' || !session.currentNodeId) {
         const barbersRes = await pool.query(
@@ -333,23 +361,32 @@ export const botWorker = new Worker<InboundJobData>(
         session.selectedServicePrice = selectedService.price;
 
         // Generate next 5 available days
+        //
+        // Antes o dia vinha de `toISOString()` (UTC) e o rótulo de `getDay()`/
+        // `getDate()` (fuso do processo). Num contêiner UTC, depois das 21h no
+        // Brasil o "Hoje" oferecido pelo bot já era o dia seguinte.
         const dates: { dateStr: string; label: string }[] = [];
-        const now = new Date();
+        const todayParts = toZonedParts(new Date());
 
         for (let i = 0; i < 5; i++) {
-          const d = new Date(now);
-          d.setDate(d.getDate() + i);
-          const dateStr = d.toISOString().split('T')[0];
-          
+          // Meio-dia local evita que o passo de 1 dia caia em cima de uma
+          // transição de horário de verão e pule ou repita uma data.
+          const anchor = zonedTimeToUtc(todayParts.date, '12:00');
+          const target = new Date(anchor.getTime() + i * 24 * 60 * 60 * 1000);
+          const parts = toZonedParts(target);
+          const dateStr = parts.date;
+
           let dayLabel = '';
           if (i === 0) dayLabel = 'Hoje';
           else if (i === 1) dayLabel = 'Amanhã';
           else {
             const weekDays = ['Domingo', 'Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado'];
-            dayLabel = weekDays[d.getDay()];
+            // getUTCDay sobre a data local reconstruída dá o dia da semana correto.
+            const weekdayIndex = new Date(`${dateStr}T00:00:00.000Z`).getUTCDay();
+            dayLabel = weekDays[weekdayIndex];
           }
 
-          const dayFormatted = `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}`;
+          const dayFormatted = `${String(parts.day).padStart(2, '0')}/${String(parts.month).padStart(2, '0')}`;
           dates.push({ dateStr, label: `${dayLabel} (${dayFormatted})` });
         }
 
@@ -398,27 +435,34 @@ export const botWorker = new Worker<InboundJobData>(
         const closeTimeStr = est.closing_time || '19:00';
         const slotDuration = est.slot_duration_minutes || 30;
 
-        // Query existing appointments for selected barber & date
+        // Query existing appointments for selected barber & date.
+        //
+        // A janela é calculada no fuso do estabelecimento. O filtro anterior
+        // (`>= $2::date`) usava a data crua e, combinado com a montagem dos slots
+        // em UTC puro logo abaixo, produzia uma agenda deslocada em 3 horas: o bot
+        // oferecia 05:00–16:00 para uma barbearia configurada das 08:00 às 19:00.
+        const dayStart = zonedTimeToUtc(selectedDateObj.dateStr, '00:00');
+        const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+
         const existingApptsRes = await pool.query(
-          `SELECT appointment_time 
-           FROM appointments 
-           WHERE barber_id = $1 
+          `SELECT appointment_time
+           FROM appointments
+           WHERE barber_id = $1
              AND status != 'cancelled'
-             AND appointment_time >= $2::date
-             AND appointment_time < ($2::date + INTERVAL '1 day')`,
-          [session.selectedBarberId, selectedDateObj.dateStr]
+             AND appointment_time >= $2
+             AND appointment_time < $3`,
+          [session.selectedBarberId, dayStart.toISOString(), dayEnd.toISOString()]
         );
 
-        const bookedTimes = new Set(
-          existingApptsRes.rows.map(r => {
-            const dt = new Date(r.appointment_time);
-            return `${dt.getUTCHours().toString().padStart(2, '0')}:${dt.getUTCMinutes().toString().padStart(2, '0')}`;
-          })
+        // Comparação por instante (ms), não por rótulo de hora — o rótulo dependia
+        // do fuso e não casava com os horários gravados pelo painel web.
+        const bookedInstants = new Set(
+          existingApptsRes.rows.map((r) => new Date(r.appointment_time).getTime())
         );
 
         // Generate available slots
-        const [openH, openM] = openTimeStr.split(':').map(Number);
-        const [closeH, closeM] = closeTimeStr.split(':').map(Number);
+        const [openH, openM] = String(openTimeStr).split(':').map(Number);
+        const [closeH, closeM] = String(closeTimeStr).split(':').map(Number);
 
         const slots: { iso: string; timeLabel: string }[] = [];
         let currMinutes = openH * 60 + openM;
@@ -430,12 +474,11 @@ export const botWorker = new Worker<InboundJobData>(
           const h = Math.floor(currMinutes / 60);
           const m = currMinutes % 60;
           const timeLabel = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
-          
-          const slotISO = `${selectedDateObj.dateStr}T${timeLabel}:00.000Z`;
-          const slotDate = new Date(slotISO);
 
-          if (slotDate > now && !bookedTimes.has(timeLabel)) {
-            slots.push({ iso: slotISO, timeLabel });
+          const slotDate = zonedTimeToUtc(selectedDateObj.dateStr, timeLabel);
+
+          if (slotDate > now && !bookedInstants.has(slotDate.getTime())) {
+            slots.push({ iso: slotDate.toISOString(), timeLabel });
           }
 
           currMinutes += slotDuration;
@@ -485,18 +528,55 @@ export const botWorker = new Worker<InboundJobData>(
         session.selectedSlotISO = selectedSlot.iso;
         session.selectedSlotLabel = selectedSlot.timeLabel;
 
-        // Insert appointment into database
-        await pool.query(
-          `INSERT INTO appointments (establishment_id, barber_id, client_id, appointment_time, status, service_id)
-           VALUES ($1, $2, $3, $4, 'confirmed', $5)`,
-          [
+        const bookingClientId = clientCheck.rows[0]?.id;
+        if (!bookingClientId) {
+          // Estado inconsistente (cadastro removido no meio da conversa): reinicia
+          // o fluxo em vez de estourar e reprocessar o job cinco vezes.
+          await outboundQueue.add('send-whatsapp-message', {
             establishmentId,
-            session.selectedBarberId,
-            clientCheck.rows[0].id,
-            selectedSlot.iso,
-            session.selectedServiceId === 'default' ? null : session.selectedServiceId
-          ]
-        );
+            phone,
+            text: '⚠️ Não consegui localizar seu cadastro. Vamos recomeçar: envie qualquer mensagem para iniciar de novo.',
+          });
+          session.state = 'IDLE';
+          session.currentNodeId = 'welcome';
+          session.waitingForInput = false;
+          await saveSession(establishmentId, phone, session);
+          return;
+        }
+
+        // Insert appointment into database.
+        //
+        // O índice único (barber_id, appointment_time) pode disparar se alguém
+        // tiver pegado o horário entre a exibição do menu e a resposta. Sem este
+        // tratamento o job falhava, o BullMQ retentava 5 vezes e o cliente recebia
+        // a mesma pergunta repetidamente.
+        try {
+          await pool.query(
+            `INSERT INTO appointments (establishment_id, barber_id, client_id, appointment_time, status, service_id)
+             VALUES ($1, $2, $3, $4, 'confirmed', $5)`,
+            [
+              establishmentId,
+              session.selectedBarberId,
+              bookingClientId,
+              selectedSlot.iso,
+              session.selectedServiceId === 'default' ? null : session.selectedServiceId
+            ]
+          );
+        } catch (insertErr: any) {
+          if (insertErr?.code === '23505') {
+            await outboundQueue.add('send-whatsapp-message', {
+              establishmentId,
+              phone,
+              text: `😕 Poxa, o horário das *${selectedSlot.timeLabel}* acabou de ser reservado por outra pessoa.\n\nEnvie qualquer mensagem para escolher um novo horário.`,
+            });
+            session.state = 'IDLE';
+            session.currentNodeId = 'welcome';
+            session.waitingForInput = false;
+            await saveSession(establishmentId, phone, session);
+            return;
+          }
+          throw insertErr;
+        }
 
         const priceStr = session.selectedServicePrice && session.selectedServicePrice > 0 
           ? `\n💰 *Valor:* R$ ${session.selectedServicePrice.toFixed(2).replace('.', ',')}`

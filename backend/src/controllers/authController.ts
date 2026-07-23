@@ -1,21 +1,38 @@
 import { Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
 import pool from '../config/db';
 import { AuthenticatedRequest } from '../middleware/auth';
 import { sendOrchestratedMessage } from '../services/whatsappManager';
+import { JWT_SECRET, JWT_STAFF_EXPIRATION } from '../config/jwt';
+import { normalizePhone } from '../utils/phone';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
+const BCRYPT_ROUNDS = 12;
+const MIN_PASSWORD_LENGTH = 8;
 
-const formatPhone = (phone: string) => {
-  let clean = phone.replace(/\D/g, '').trim();
-  if (clean.startsWith('55')) {
-    clean = clean.substring(2);
+// Hash descartável ("não-é-uma-senha", 12 rounds) usado só para igualar o tempo
+// de resposta quando o e-mail informado não existe.
+const DUMMY_PASSWORD_HASH = '$2b$12$C6UzMDM.H6dfI/f/IKcEe.wqbZbrJLZoRfmwqBqEuDPWXvhcNPqUC';
+
+// Alfabeto sem caracteres ambíguos (0/O, 1/l/I) — a senha é ditada via WhatsApp.
+const TEMP_PASSWORD_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+
+/**
+ * Senha temporária com CSPRNG. `Math.random()` não é criptográfico: seu estado
+ * interno é recuperável a partir de poucas saídas, o que permitiria prever as
+ * senhas emitidas para outros estabelecimentos.
+ */
+const generateTempPassword = (length = 14): string => {
+  const bytes = crypto.randomBytes(length * 2);
+  let out = '';
+  for (let i = 0; out.length < length && i < bytes.length; i++) {
+    // Rejeita valores que enviesariam a distribuição módulo.
+    const max = 256 - (256 % TEMP_PASSWORD_ALPHABET.length);
+    if (bytes[i] >= max) continue;
+    out += TEMP_PASSWORD_ALPHABET[bytes[i] % TEMP_PASSWORD_ALPHABET.length];
   }
-  if (clean.length === 11 && clean[2] === '9') {
-    clean = clean.substring(0, 2) + clean.substring(3);
-  }
-  return '55' + clean;
+  return out.length === length ? out : generateTempPassword(length);
 };
 
 // Login User
@@ -38,10 +55,22 @@ export const login = async (req: AuthenticatedRequest, res: Response) => {
     );
     
     if (result.rows.length === 0) {
+      // Gasta o mesmo tempo de um bcrypt real para não vazar, por diferença de
+      // latência, se o e-mail existe na base (user enumeration por timing).
+      await bcrypt.compare(password, DUMMY_PASSWORD_HASH);
       return res.status(401).json({ error: 'Invalid email or password.' });
     }
 
     const user = result.rows[0];
+
+    // A senha é verificada ANTES de qualquer checagem de status. Responder
+    // "estabelecimento suspenso" a quem não sabe a senha entrega ao atacante a
+    // confirmação de que o e-mail existe e qual o estado da conta.
+    const passwordMatch = await bcrypt.compare(password, user.password_hash);
+
+    if (!passwordMatch) {
+      return res.status(401).json({ error: 'Invalid email or password.' });
+    }
 
     if (!user.is_active) {
       return res.status(403).json({ error: 'Acesso revogado. Entre em contato com o administrador.' });
@@ -51,19 +80,13 @@ export const login = async (req: AuthenticatedRequest, res: Response) => {
       if (user.establishment_active === false) {
         return res.status(403).json({ error: 'Acesso revogado. O estabelecimento associado está suspenso.' });
       }
-      
+
       if (user.establishment_expires_at) {
         const expiresAt = new Date(user.establishment_expires_at);
         if (expiresAt < new Date()) {
           return res.status(403).json({ error: 'Acesso expirado. Seu período de testes ou assinatura chegou ao fim.' });
         }
       }
-    }
-
-    const passwordMatch = await bcrypt.compare(password, user.password_hash);
-
-    if (!passwordMatch) {
-      return res.status(401).json({ error: 'Invalid email or password.' });
     }
 
     // Generate stateless JWT
@@ -76,7 +99,7 @@ export const login = async (req: AuthenticatedRequest, res: Response) => {
         role: user.role,
       },
       JWT_SECRET,
-      { expiresIn: '8h' }
+      { expiresIn: JWT_STAFF_EXPIRATION }
     );
 
     return res.json({
@@ -153,11 +176,29 @@ export const registerOwner = async (req: AuthenticatedRequest, res: Response) =>
     return res.status(400).json({ error: 'All fields are required.' });
   }
 
-  // Format phone number to clean representation (55 + DDD + 8 digits)
-  const cleanPhone = formatPhone(phone);
+  // Validação de formato (allowlist) antes de tocar no banco.
+  if (typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email) || email.length > 255) {
+    return res.status(400).json({ error: 'E-mail inválido.' });
+  }
 
-  // Generate a random temporary password (e.g. "x8f9a2bC")
-  const tempPassword = Math.random().toString(36).slice(-8) + Math.random().toString(36).substring(2, 4).toUpperCase();
+  // O slug entra em URLs públicas: apenas minúsculas, dígitos e hífen.
+  if (typeof establishment_slug !== 'string' || !/^[a-z0-9][a-z0-9-]{1,62}$/.test(establishment_slug)) {
+    return res.status(400).json({
+      error: 'O identificador da barbearia deve ter de 2 a 63 caracteres, usando apenas letras minúsculas, números e hífen.',
+    });
+  }
+
+  if (String(name).trim().length < 2 || String(establishment_name).trim().length < 2) {
+    return res.status(400).json({ error: 'Nome do responsável e da barbearia são obrigatórios.' });
+  }
+
+  // Format phone number to canonical representation (55 + DDD + assinante)
+  const cleanPhone = normalizePhone(phone);
+  if (cleanPhone.length < 12) {
+    return res.status(400).json({ error: 'Telefone inválido. Informe DDD + número.' });
+  }
+
+  const tempPassword = generateTempPassword();
 
   const client = await pool.connect();
   try {
@@ -216,7 +257,7 @@ export const registerOwner = async (req: AuthenticatedRequest, res: Response) =>
     const establishmentId = estResult.rows[0].id;
 
     // Hash temporary password
-    const salt = await bcrypt.genSalt(10);
+    const salt = await bcrypt.genSalt(BCRYPT_ROUNDS);
     const passwordHash = await bcrypt.hash(tempPassword, salt);
 
     // Insert user with owner role, phone and require_password_change = true
@@ -240,6 +281,9 @@ export const registerOwner = async (req: AuthenticatedRequest, res: Response) =>
       console.error('[WhatsAppNotify] Failed to send credentials to owner:', err);
     });
 
+    // A senha temporária volta na resposta porque o super admin precisa repassá-la
+    // manualmente caso a sessão WhatsApp do sistema esteja fora do ar. A rota já
+    // exige role 'admin', que de todo modo pode redefinir a senha de qualquer usuário.
     return res.status(201).json({
       message: 'Establishment and Owner registered successfully.',
       user: registeredUser,
@@ -261,12 +305,16 @@ export const changeTempPassword = async (req: AuthenticatedRequest, res: Respons
     return res.status(401).json({ error: 'Unauthorized.' });
   }
 
-  if (!newPassword || newPassword.length < 6) {
-    return res.status(400).json({ error: 'New password must be at least 6 characters long.' });
+  if (typeof newPassword !== 'string' || newPassword.length < MIN_PASSWORD_LENGTH) {
+    return res.status(400).json({ error: `A nova senha deve ter no mínimo ${MIN_PASSWORD_LENGTH} caracteres.` });
+  }
+
+  if (newPassword.length > 128) {
+    return res.status(400).json({ error: 'A nova senha é longa demais (máximo de 128 caracteres).' });
   }
 
   try {
-    const salt = await bcrypt.genSalt(10);
+    const salt = await bcrypt.genSalt(BCRYPT_ROUNDS);
     const hash = await bcrypt.hash(newPassword, salt);
 
     await pool.query(

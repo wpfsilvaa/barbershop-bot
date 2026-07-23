@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useEstablishmentTheme } from '../contexts/ThemeContext';
-import { apiRequest, getApiUrl } from '../services/api';
+import { apiRequest, getApiUrl, getAuthToken } from '../services/api';
 import { 
   Calendar, 
   Users, 
@@ -23,7 +23,6 @@ import {
   CalendarDays,
   FileText,
   Workflow,
-  HelpCircle,
   ArrowRight,
   MessageCircle,
   TrendingUp,
@@ -37,12 +36,15 @@ import {
   Star,
   Copy,
   Cpu,
-  Play
+  Send
 } from 'lucide-react';
 
 interface FlowNode {
   id: string;
-  type: 'message' | 'condition' | 'action' | 'api';
+  // 'start' e 'end' faltavam nesta união, apesar de o fluxo padrão gravado no banco
+  // usar os dois e o editor tratá-los em vários pontos. O TypeScript classificava
+  // essas comparações como impossíveis (TS2367) e o `npm run build` quebrava.
+  type: 'start' | 'end' | 'message' | 'condition' | 'action' | 'api';
   actionType?: string;
   title: string;
   x: number;
@@ -307,7 +309,6 @@ export const Dashboard: React.FC = () => {
   const [shopAddress, setShopAddress] = useState('');
   const [shopBio, setShopBio] = useState('');
   const [shopPhotos, setShopPhotos] = useState<string[]>([]);
-  const [newPhotoUrl, setNewPhotoUrl] = useState<string>('');
 
   // Form states - Services CRUD & Assignment
   const [services, setServices] = useState<any[]>([]);
@@ -325,11 +326,14 @@ export const Dashboard: React.FC = () => {
   const [customDurations, setCustomDurations] = useState<Record<string, string>>({});
   
   // Customizable bot message flow templates (Legacy fields - kept for compatibility)
-  const [msgWelcome, setMsgWelcome] = useState('');
-  const [msgSelectBarber, setMsgSelectBarber] = useState('');
-  const [msgSelectDate, setMsgSelectDate] = useState('');
-  const [msgSelectSlot, setMsgSelectSlot] = useState('');
-  const [msgConfirmed, setMsgConfirmed] = useState('');
+  // Templates de mensagem legados: preenchidos a partir da API e reenviados no
+  // salvamento, mas não renderizados — o editor atual usa o fluxograma. Só os
+  // setters são necessários.
+  const [, setMsgWelcome] = useState('');
+  const [, setMsgSelectBarber] = useState('');
+  const [, setMsgSelectDate] = useState('');
+  const [, setMsgSelectSlot] = useState('');
+  const [, setMsgConfirmed] = useState('');
   const [msgFallback, setMsgFallback] = useState('');
 
   // Graphical branching flowchart configuration
@@ -362,6 +366,57 @@ export const Dashboard: React.FC = () => {
   const [refreshingBot, setRefreshingBot] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const chatMessagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Executive Analytics & Barber Today State
+  const [executiveMetrics, setExecutiveMetrics] = useState<any>(null);
+  const [, setLoadingExecutiveMetrics] = useState(false);
+  const [campaignMessage, setCampaignMessage] = useState('');
+  const [sendingCampaign, setSendingCampaign] = useState(false);
+  const [barberTodayData, setBarberTodayData] = useState<any>(null);
+  const [, setLoadingBarberToday] = useState(false);
+
+  const fetchExecutiveMetrics = async () => {
+    if (!user?.establishment_id) return;
+    setLoadingExecutiveMetrics(true);
+    try {
+      const data = await apiRequest(`/establishments/${user.establishment_id}/executive-analytics`, 'GET');
+      setExecutiveMetrics(data);
+    } catch (err: any) {
+      console.error('Fetch executive metrics error:', err);
+    } finally {
+      setLoadingExecutiveMetrics(false);
+    }
+  };
+
+  const fetchBarberToday = async () => {
+    if (!user?.establishment_id) return;
+    setLoadingBarberToday(true);
+    try {
+      const data = await apiRequest(`/establishments/${user.establishment_id}/barbers/my-today`, 'GET');
+      setBarberTodayData(data);
+    } catch (err: any) {
+      console.error('Fetch barber today error:', err);
+    } finally {
+      setLoadingBarberToday(false);
+    }
+  };
+
+  const handleSendCampaign = async () => {
+    if (!user?.establishment_id) return;
+    setSendingCampaign(true);
+    try {
+      const res = await apiRequest(`/establishments/${user.establishment_id}/campaigns/reengage-inactive`, 'POST', {
+        customMessage: campaignMessage
+      });
+      showToast(res.message || 'Campanha enviada com sucesso!');
+      setCampaignMessage('');
+      fetchExecutiveMetrics();
+    } catch (err: any) {
+      showToast(err.message || 'Erro ao enviar campanha.', 'error');
+    } finally {
+      setSendingCampaign(false);
+    }
+  };
 
   // General Notification toast
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
@@ -621,7 +676,7 @@ export const Dashboard: React.FC = () => {
     if (!user?.establishment_id || (user.role !== 'owner' && user.role !== 'admin')) return;
 
     if (!promoCampaignText.trim()) {
-      showToast('Digite o texto da promoção.', 'warning');
+      showToast('Digite o texto da promoção.', 'error');
       return;
     }
 
@@ -761,28 +816,15 @@ export const Dashboard: React.FC = () => {
     setBroadcastSending(true);
     setBroadcastResult(null);
     try {
-      const ownerContacts = superUsers.filter(u => u.role === 'owner' && u.phone);
-      let sentCount = 0;
-      for (const owner of ownerContacts) {
-        if (owner.establishment_id) {
-          try {
-            await apiRequest('/whatsapp/send', {
-              method: 'POST',
-              body: JSON.stringify({
-                establishmentId: owner.establishment_id,
-                phone: owner.phone,
-                message: `📢 *AVISO DA PLATAFORMA BARBERHUB*\n\n${broadcastMessage}\n\n_Atenciosamente, Equipe BarberHub_`
-              })
-            });
-            sentCount++;
-          } catch (e) {
-            // Continua enviando para os demais em caso de erro individual
-          }
-        }
-      }
+      // Um único request: o backend seleciona os proprietários ativos e enfileira
+      // as mensagens. A versão anterior chamava uma rota inexistente e o erro era
+      // silenciado por um catch vazio dentro do laço.
+      const res = await apiRequest('/admin/broadcast', 'POST', { message: broadcastMessage });
+      const sentCount = res.count ?? 0;
+
       setBroadcastResult({
         type: 'success',
-        message: `Comunicado transmitido com sucesso para ${sentCount} de ${ownerContacts.length} proprietários parceiros!`
+        message: res.message || `Comunicado transmitido para ${sentCount} proprietários parceiros!`
       });
       setBroadcastMessage('');
       setSystemLogs(prev => [
@@ -1627,6 +1669,16 @@ export const Dashboard: React.FC = () => {
     }
   };
 
+  // O botão "🔊 Som Ativo / 🔇 Mudo" existia na interface, mas
+  // `playNotificationSound` nunca era chamado — o alerta sonoro de mensagem nova
+  // simplesmente não tocava. O ref mantém a versão mais recente da função para o
+  // handler do SSE, que é registrado uma única vez e de outro modo capturaria um
+  // `soundEnabled` desatualizado.
+  const playNotificationSoundRef = useRef(playNotificationSound);
+  useEffect(() => {
+    playNotificationSoundRef.current = playNotificationSound;
+  });
+
   // Auto-scroll chat to latest message
   useEffect(() => {
     chatMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -1663,13 +1715,27 @@ export const Dashboard: React.FC = () => {
       : `ws://${window.location.hostname}:5000`;
 
     console.log(`[WS] Connecting to WebSocket: ${wsUrl}`);
-    let ws = new WebSocket(wsUrl);
+
+    // `cancelled` e `reconnectTimer` evitam o vazamento anterior: o cleanup do
+    // effect fechava o socket, o handler `onclose` disparava e agendava uma nova
+    // conexão, que por sua vez agendava outra — o painel acumulava sockets a cada
+    // troca de barbearia ou navegação.
+    let ws: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
 
     const connectWS = () => {
+      if (cancelled) return;
+
+      ws = new WebSocket(wsUrl);
+
       ws.onopen = () => {
         console.log('[WS] Connected to dashboard server.');
-        ws.send(JSON.stringify({
+        // O servidor autentica pelo JWT: o establishmentId sozinho permitiria
+        // que qualquer um escutasse as conversas de outra barbearia.
+        ws?.send(JSON.stringify({
           type: 'auth',
+          token: getAuthToken(),
           establishmentId: user.establishment_id
         }));
       };
@@ -1687,25 +1753,34 @@ export const Dashboard: React.FC = () => {
       };
 
       ws.onclose = () => {
+        if (cancelled) return;
         console.log('[WS] Connection closed. Reconnecting in 3s...');
-        setTimeout(() => {
-          ws = new WebSocket(wsUrl);
-          connectWS();
-        }, 3000);
+        reconnectTimer = setTimeout(connectWS, 3000);
       };
-      
+
       ws.onerror = (err) => {
         console.error('[WS] Socket encountered error:', err);
-        ws.close();
+        ws?.close();
       };
     };
 
     connectWS();
 
     return () => {
-      ws.close();
+      cancelled = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      ws?.close();
     };
   }, [user?.establishment_id]);
+
+  useEffect(() => {
+    if (user?.establishment_id) {
+      if (user.role === 'owner' || user.role === 'admin') {
+        fetchExecutiveMetrics();
+      }
+      fetchBarberToday();
+    }
+  }, [user?.establishment_id, activeTab]);
 
   const handlePauseChatBot = async (phone: string) => {
     const targetEstId = selectedChat?.establishmentId || user?.establishment_id || (user?.role === 'admin' ? 'all' : null);
@@ -1777,7 +1852,22 @@ export const Dashboard: React.FC = () => {
     }
   };
 
-  const handleSendManualChatMessage = async (phoneToUse?: string, messageToUse?: string) => {
+  // A assinatura anterior era `(phoneToUse?, messageToUse?)`, mas a função é usada
+  // como `onSubmit` do formulário de chat: o React passava o evento como primeiro
+  // argumento e ninguém chamava `preventDefault()`, então enviar uma mensagem
+  // recarregava a página inteira e derrubava a conversa aberta.
+  const handleSendManualChatMessage = async (
+    eventOrMessage?: React.FormEvent | string,
+    messageArg?: string
+  ) => {
+    let messageToUse: string | undefined = messageArg;
+
+    if (typeof eventOrMessage === 'string') {
+      messageToUse = eventOrMessage;
+    } else if (eventOrMessage && typeof (eventOrMessage as React.FormEvent).preventDefault === 'function') {
+      (eventOrMessage as React.FormEvent).preventDefault();
+    }
+
     const targetEstId = selectedChat?.establishmentId || user?.establishment_id || (user?.role === 'admin' ? 'all' : null);
     if (!targetEstId || !selectedChat) return;
 
@@ -1825,6 +1915,13 @@ export const Dashboard: React.FC = () => {
         const data = JSON.parse(event.data);
         if (data.type !== 'connected') {
           console.log('[SSE] Live chat event received:', data);
+
+          // Toca o alerta apenas em mensagem recebida do cliente — não no eco das
+          // mensagens enviadas pelo próprio painel nem em mudanças de estado do bot.
+          if (data.text && data.fromMe === false) {
+            playNotificationSoundRef.current();
+          }
+
           fetchActiveChats(targetEstId);
         }
       } catch (e) {
@@ -2014,27 +2111,6 @@ export const Dashboard: React.FC = () => {
     showToast('Conexão removida! Você pode redesenhá-la agora.');
   };
 
-  // SVG Curve Connector Builder
-  const getConnectorPath = (
-    fromPos: { x: number; y: number },
-    toPos: { x: number; y: number },
-    cardWidth = 240,
-    cardHeight = 90
-  ) => {
-    const x1 = fromPos.x + cardWidth;
-    const y1 = fromPos.y + cardHeight / 2;
-    const x2 = toPos.x;
-    const y2 = toPos.y + cardHeight / 2;
-
-    const controlOffset = 80;
-    const cp1x = x1 + controlOffset;
-    const cp1y = y1;
-    const cp2x = x2 - controlOffset;
-    const cp2y = y2;
-
-    return `M ${x1} ${y1} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${x2} ${y2}`;
-  };
-
   // Add a new node (supports click creation and drag-and-drop creation)
   const handleAddNewNode = (type: 'message' | 'condition' | 'api', clientX?: number, clientY?: number) => {
     const newNodeId = `node_${type === 'message' ? 'msg' : type === 'condition' ? 'cond' : 'api'}_${Date.now()}`;
@@ -2102,10 +2178,6 @@ export const Dashboard: React.FC = () => {
     showToast(`Novo nó de ${type === 'message' ? 'mensagem' : type === 'condition' ? 'verificação' : 'integração API'} criado!`);
   };
 
-  // Legacy wrappers for back compatibility if needed, though they just delegate
-  const handleAddNewMessageNode = () => handleAddNewNode('message');
-  const handleAddNewConditionNode = () => handleAddNewNode('condition');
-
   // Duplicate a flowchart node with coordinates shifted slightly
   const handleDuplicateNode = (node: FlowNode) => {
     const reservedIds = ['start', 'end', 'welcome', 'check_intent', 'select_barber', 'select_date', 'select_slot', 'confirmed', 'offer_plan'];
@@ -2147,7 +2219,9 @@ export const Dashboard: React.FC = () => {
   const handleRestoreDefaultFlowchart = () => {
     if (!window.confirm('Atenção: Isso irá redefinir todo o fluxograma para o modelo padrão de agendamento automático. Suas alterações personalizadas não salvas serão perdidas. Deseja prosseguir?')) return;
 
-    const defaultFlow = {
+    // `satisfies BotFlowSchema` faria o literal ser inferido como `string`; anotar o
+    // tipo garante que os literais sejam estreitados para a união de FlowNode.
+    const defaultFlow: BotFlowSchema = {
       nodes: [
         { id: 'start', type: 'start', title: 'Início', x: 50, y: 250 },
         { id: 'welcome', type: 'message', title: 'Boas-Vindas', x: 350, y: 250, text: 'Olá! Seja bem-vindo à Barbearia.' },
@@ -2472,6 +2546,24 @@ export const Dashboard: React.FC = () => {
               </div>
             );
           })()}
+
+          {user?.role === 'barber' && barberTodayData && (
+            <div style={{ 
+              background: 'linear-gradient(135deg, rgba(212,175,55,0.2) 0%, rgba(18,18,18,0.8) 100%)', 
+              border: '1px solid var(--primary)', 
+              borderRadius: '20px', 
+              padding: '6px 14px', 
+              color: 'var(--primary)', 
+              fontWeight: 'bold', 
+              fontSize: '13px', 
+              display: 'flex', 
+              alignItems: 'center', 
+              gap: '6px',
+              boxShadow: '0 4px 12px rgba(212,175,55,0.15)'
+            }}>
+              ✂️ Sua Comissão Hoje: R$ {barberTodayData.totalEarningsToday.toFixed(2)} ({barberTodayData.totalServicesToday} cortes)
+            </div>
+          )}
 
           <div style={{ textAlign: 'right' }}>
             <p style={{ fontWeight: '500', fontSize: '15px' }}>{user?.name}</p>
@@ -6876,6 +6968,44 @@ export const Dashboard: React.FC = () => {
                           )}
                         </tbody>
                       </table>
+                    </div>
+                  </div>
+
+                  {/* Campanha de Reengajamento no WhatsApp */}
+                  <div className="card-premium" style={{ border: '1px solid rgba(212,175,55,0.2)', background: 'linear-gradient(135deg, rgba(212,175,55,0.05) 0%, rgba(18,18,18,0.9) 100%)', padding: '24px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '12px' }}>
+                      <div>
+                        <h3 style={{ fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--primary)' }}>
+                          <Send size={20} />
+                          Campanha de Reengajamento Automático no WhatsApp
+                        </h3>
+                        <p style={{ color: 'var(--muted)', fontSize: '13px', marginTop: '4px' }}>
+                          Dispare uma mensagem personalizada para clientes que não realizam cortes há mais de 30 dias ({executiveMetrics?.inactiveClientsCount || 0} clientes inativos identificados).
+                        </p>
+                      </div>
+                      <span style={{ fontSize: '12px', padding: '6px 14px', borderRadius: '20px', background: 'rgba(212,175,55,0.15)', color: 'var(--primary)', fontWeight: 'bold', border: '1px solid rgba(212,175,55,0.3)' }}>
+                        🎯 {executiveMetrics?.inactiveClientsCount || 0} Clientes Elegíveis
+                      </span>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '16px' }}>
+                      <input 
+                        type="text" 
+                        className="form-input" 
+                        placeholder="Ex: Olá {nome}! Sentimos sua falta na barbearia 💈 Que tal garantir seu horário para esta semana?"
+                        value={campaignMessage}
+                        onChange={(e) => setCampaignMessage(e.target.value)}
+                        style={{ flex: 1, minWidth: '280px' }}
+                      />
+                      <button 
+                        className="btn-primary" 
+                        onClick={handleSendCampaign}
+                        disabled={sendingCampaign || (executiveMetrics?.inactiveClientsCount || 0) === 0}
+                        style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '0 24px' }}
+                      >
+                        {sendingCampaign ? <RefreshCw size={16} className="animate-spin" /> : <Send size={16} />}
+                        <span>Disparar Campanha</span>
+                      </button>
                     </div>
                   </div>
                 </>

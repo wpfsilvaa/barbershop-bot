@@ -3,7 +3,6 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { Login } from './pages/Login';
-import { RegisterOwner } from './pages/RegisterOwner';
 import { Dashboard } from './pages/Dashboard';
 import { ClientBooking } from './pages/ClientBooking';
 import { ClientPortal } from './pages/ClientPortal';
