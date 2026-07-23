@@ -1,26 +1,46 @@
 version: '3.8'
 
+# Segredos vêm de um arquivo `.env` na raiz do projeto (veja `.env.example`).
+# A sintaxe `${VAR:?mensagem}` faz o `docker compose up` falhar se a variável não
+# estiver definida — antes o JWT_SECRET estava escrito em texto puro neste arquivo,
+# que é versionado, então qualquer pessoa com acesso ao repositório podia assinar
+# tokens de administrador de qualquer barbearia.
+
 services:
   db:
     image: postgres:15-alpine
     container_name: bot_whatsapp_db
     restart: always
     environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=bot_whatsapp
+      - POSTGRES_USER=${DB_USER:-postgres}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:?defina DB_PASSWORD no .env da raiz}
+      - POSTGRES_DB=${DB_DATABASE:-bot_whatsapp}
       - TZ=America/Sao_Paulo
-    ports:
-      - "5432:5432"
+    # O banco não precisa ficar exposto no host: os outros serviços o alcançam pela
+    # rede interna do compose. Descomente apenas se precisar conectar de fora.
+    # ports:
+    #   - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_DATABASE:-bot_whatsapp}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7-alpine
     container_name: bot_whatsapp_redis
     restart: always
-    ports:
-      - "6379:6379"
+    # Idem: sem publicação no host, o Redis (que não tem senha) deixa de ficar
+    # acessível a qualquer processo da máquina.
+    # ports:
+    #   - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   backend:
     build:
@@ -32,19 +52,24 @@ services:
       - "5000:5000"
     environment:
       - PORT=5000
-      - DB_USER=postgres
+      - NODE_ENV=${NODE_ENV:-development}
+      - DB_USER=${DB_USER:-postgres}
       - DB_HOST=db
-      - DB_DATABASE=bot_whatsapp
-      - DB_PASSWORD=postgres
+      - DB_DATABASE=${DB_DATABASE:-bot_whatsapp}
+      - DB_PASSWORD=${DB_PASSWORD:?defina DB_PASSWORD no .env da raiz}
       - DB_PORT=5432
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - JWT_SECRET=8f4a3e2d1c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3
-      - CORS_ORIGIN=http://localhost:5173
+      - JWT_SECRET=${JWT_SECRET:?defina JWT_SECRET no .env da raiz (mínimo 32 caracteres)}
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY:?defina INTERNAL_API_KEY no .env da raiz}
+      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:5173}
+      - APP_TIMEZONE=${APP_TIMEZONE:-America/Sao_Paulo}
       - TZ=America/Sao_Paulo
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
       - ./backend:/app
       - /app/node_modules
@@ -56,17 +81,22 @@ services:
     container_name: bot_whatsapp_gateway
     restart: always
     environment:
-      - DB_USER=postgres
+      - NODE_ENV=${NODE_ENV:-development}
+      - DB_USER=${DB_USER:-postgres}
       - DB_HOST=db
-      - DB_DATABASE=bot_whatsapp
-      - DB_PASSWORD=postgres
+      - DB_DATABASE=${DB_DATABASE:-bot_whatsapp}
+      - DB_PASSWORD=${DB_PASSWORD:?defina DB_PASSWORD no .env da raiz}
       - DB_PORT=5432
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY:?defina INTERNAL_API_KEY no .env da raiz}
+      - APP_TIMEZONE=${APP_TIMEZONE:-America/Sao_Paulo}
       - TZ=America/Sao_Paulo
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   frontend:
     build:
