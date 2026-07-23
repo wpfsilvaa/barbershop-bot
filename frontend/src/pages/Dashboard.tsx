@@ -34,7 +34,8 @@ import {
   BookOpen,
   Star,
   Copy,
-  Cpu
+  Cpu,
+  Play
 } from 'lucide-react';
 
 interface FlowNode {
@@ -840,6 +841,7 @@ export const Dashboard: React.FC = () => {
       showToast(err.message || 'Erro ao desconectar sessão.', 'error');
     }
   };
+
 
   // Update License Expiration Days
   const handleUpdateLicenseDays = async (establishmentId: string, days: number) => {

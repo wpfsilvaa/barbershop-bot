@@ -13,7 +13,7 @@ import { usePostgresAuthState } from './services/dbAuthStore';
 dotenv.config();
 
 const logger = pino({ level: 'silent' });
-const BOT_SIGNATURE = '🤖 *Atendimento Automático*';
+const BOT_SIGNATURE = '🤖*';
 
 // Read establishment_id from Environment
 const establishmentId = process.env.ESTABLISHMENT_ID;
@@ -507,8 +507,14 @@ async function boot() {
         // Tenta obter e salvar a foto de perfil de forma assíncrona
         fetchAndUpdateProfilePicture(sock, phone).catch(() => {});
 
-        // Se a mensagem foi enviada pelo próprio remetente (atendente no celular físico)
-        if (msg.key?.fromMe) {
+        // Identificar se a mensagem veio do próprio número do bot (dono/atendente no celular físico ou outro dispositivo)
+        const botPhone = sock.user?.id ? sock.user.id.split(':')[0].split('@')[0] : null;
+        const sender = msg.participant || msg.key?.participant || '';
+        const isFromMe = msg.key?.fromMe || 
+                         (botPhone && sender.split('@')[0].startsWith(botPhone)) || 
+                         (botPhone && msg.key?.remoteJid?.split('@')[0].startsWith(botPhone));
+
+        if (isFromMe) {
           const text = (
             msg.message?.conversation || 
             msg.message?.extendedTextMessage?.text || 
@@ -551,11 +557,10 @@ async function boot() {
       }
     });
 
-    // -------------------------------------------------------------
-    // Active Outbound Message Queue polling loop (every 1 second)
-    // -------------------------------------------------------------
+    let isProcessingQueue = false;
     setInterval(async () => {
-      if (!isConnected) return;
+      if (!isConnected || isProcessingQueue) return;
+      isProcessingQueue = true;
       try {
         const res = await pool.query(
           "SELECT * FROM whatsapp_queue WHERE establishment_id = $1 AND status = 'pending' ORDER BY id ASC LIMIT 5",
@@ -612,6 +617,8 @@ async function boot() {
         }
       } catch (err) {
         console.error('[QueueScheduler] Error processing pending queue:', err);
+      } finally {
+        isProcessingQueue = false;
       }
     }, 1000);
 
@@ -654,10 +661,27 @@ async function handleTenantBotFlow(sock: WASocket, msg: proto.IWebMessageInfo, p
   try {
     const cleanPhone = phone.split('@')[0];
 
-    const clientCheck = await pool.query(
+    let clientCheck = await pool.query(
       'SELECT id, name FROM clients WHERE phone = $1 AND establishment_id = $2',
       [cleanPhone, establishmentId]
     );
+
+    if (clientCheck.rows.length === 0) {
+      // Check if client exists globally (registered via client portal)
+      const globalClientCheck = await pool.query(
+        'SELECT id, name FROM clients WHERE phone = $1 AND establishment_id IS NULL LIMIT 1',
+        [cleanPhone]
+      );
+      if (globalClientCheck.rows.length > 0) {
+        const globalClient = globalClientCheck.rows[0];
+        await pool.query(
+          'UPDATE clients SET establishment_id = $1 WHERE id = $2',
+          [establishmentId, globalClient.id]
+        );
+        console.log(`[LidResolver] Associated global portal client ${globalClient.name} (${globalClient.id}) to establishment ${establishmentId}`);
+        clientCheck = globalClientCheck;
+      }
+    }
 
     if (session.currentNodeId === 'register_client') {
       const clientName = text.trim();

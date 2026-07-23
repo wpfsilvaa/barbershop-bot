@@ -36,7 +36,7 @@ function callDockerAPI(options: http.RequestOptions, body?: any): Promise<any> {
 }
 
 // Helper to check if a container exists and is running
-async function getContainerState(containerName: string): Promise<{ exists: boolean; running: boolean }> {
+export async function getContainerState(containerName: string): Promise<{ exists: boolean; running: boolean }> {
   try {
     const data = await callDockerAPI({
       path: `/containers/${containerName}/json`,

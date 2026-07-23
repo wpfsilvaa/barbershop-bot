@@ -290,6 +290,7 @@ router.post('/admin/establishments', auth_1.verifyToken, (0, auth_1.requireRole)
 // Super Admin WhatsApp sessions management
 router.get('/admin/whatsapp-sessions', auth_1.verifyToken, (0, auth_1.requireRole)(['admin']), adminController_1.listWhatsAppSessions);
 router.post('/admin/whatsapp-sessions/:establishmentId/logout', auth_1.verifyToken, (0, auth_1.requireRole)(['admin']), adminController_1.logoutWhatsAppSession);
+router.post('/admin/whatsapp-sessions/:establishmentId/start', auth_1.verifyToken, (0, auth_1.requireRole)(['admin']), adminController_1.startWhatsAppSessionAdmin);
 // Super Admin Establishment Commission configuration
 router.put('/admin/establishments/:establishmentId/commission', auth_1.verifyToken, (0, auth_1.requireRole)(['admin']), adminController_1.updateEstablishmentCommission);
 router.put('/admin/establishments/:establishmentId/status', auth_1.verifyToken, (0, auth_1.requireRole)(['admin']), adminController_1.updateEstablishmentStatus);

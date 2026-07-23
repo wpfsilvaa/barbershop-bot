@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.deleteEstablishment = exports.updateEstablishmentLicense = exports.updateEstablishmentStatus = exports.updateEstablishmentCommission = exports.getGlobalMetrics = exports.getEstablishmentMetrics = exports.logoutWhatsAppSession = exports.listWhatsAppSessions = exports.changeUserPassword = exports.listAllUsers = void 0;
+exports.startWhatsAppSessionAdmin = exports.deleteEstablishment = exports.updateEstablishmentLicense = exports.updateEstablishmentStatus = exports.updateEstablishmentCommission = exports.getGlobalMetrics = exports.getEstablishmentMetrics = exports.logoutWhatsAppSession = exports.listWhatsAppSessions = exports.changeUserPassword = exports.listAllUsers = void 0;
 const db_1 = __importDefault(require("../config/db"));
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const whatsappManager_1 = require("../services/whatsappManager");
@@ -54,13 +54,16 @@ const listWhatsAppSessions = async (req, res) => {
         const establishmentsRes = await db_1.default.query('SELECT id, name, logo_url, commission_percent, is_active, expires_at FROM establishments');
         // 2. Fetch all persistent WhatsApp sessions from database
         const sessionsRes = await db_1.default.query('SELECT establishment_id, status, phone FROM whatsapp_sessions');
-        const sessionsPayload = establishmentsRes.rows.map((est) => {
+        const sessionsPayload = await Promise.all(establishmentsRes.rows.map(async (est) => {
             const sessionDb = sessionsRes.rows.find(s => s.establishment_id === est.id);
             // Map standard status values to frontend expected strings ('CONNECTED' or 'DISCONNECTED')
             let status = 'DISCONNECTED';
             if (sessionDb && sessionDb.status === 'connected') {
                 status = 'CONNECTED';
             }
+            // Check if container is running
+            const containerName = `barberhub-whatsapp-${est.id}`;
+            const dockerState = await (0, whatsappManager_1.getContainerState)(containerName);
             return {
                 establishment_id: est.id,
                 establishment_name: est.name,
@@ -69,9 +72,10 @@ const listWhatsAppSessions = async (req, res) => {
                 is_active: est.is_active,
                 expires_at: est.expires_at,
                 status: status,
-                phone: sessionDb ? sessionDb.phone : null
+                phone: sessionDb ? sessionDb.phone : null,
+                container_running: dockerState.running
             };
-        });
+        }));
         return res.json(sessionsPayload);
     }
     catch (error) {
@@ -412,3 +416,19 @@ const deleteEstablishment = async (req, res) => {
     }
 };
 exports.deleteEstablishment = deleteEstablishment;
+const startWhatsAppSessionAdmin = async (req, res) => {
+    const { establishmentId } = req.params;
+    try {
+        const estRes = await db_1.default.query('SELECT id FROM establishments WHERE id = $1', [establishmentId]);
+        if (estRes.rows.length === 0) {
+            return res.status(404).json({ error: 'Establishment not found.' });
+        }
+        await (0, whatsappManager_1.startWhatsAppSession)(String(establishmentId));
+        return res.json({ message: 'WhatsApp bot container initialized successfully.' });
+    }
+    catch (error) {
+        console.error('Start whatsapp session admin error:', error);
+        return res.status(500).json({ error: error.message || 'Internal server error.' });
+    }
+};
+exports.startWhatsAppSessionAdmin = startWhatsAppSessionAdmin;

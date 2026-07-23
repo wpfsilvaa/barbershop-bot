@@ -251,6 +251,24 @@ export const createEstablishmentClient = async (req: AuthenticatedRequest, res: 
       return res.status(400).json({ error: 'Já existe um cliente com este número de telefone cadastrado neste estabelecimento.' });
     }
 
+    // Check if client exists globally (registered via client portal)
+    const globalCheck = await pool.query(
+      'SELECT id FROM clients WHERE phone = $1 AND establishment_id IS NULL LIMIT 1',
+      [cleanPhone]
+    );
+
+    if (globalCheck.rows.length > 0) {
+      const globalClient = globalCheck.rows[0];
+      const result = await pool.query(
+        `UPDATE clients 
+         SET establishment_id = $1, name = $2, notes = $3, accept_promotions = true
+         WHERE id = $4
+         RETURNING *`,
+        [establishmentId, name, notes || '', globalClient.id]
+      );
+      return res.json(result.rows[0]);
+    }
+
     const result = await pool.query(
       `INSERT INTO clients (establishment_id, name, phone, notes, accept_promotions) 
        VALUES ($1, $2, $3, $4, $5) 

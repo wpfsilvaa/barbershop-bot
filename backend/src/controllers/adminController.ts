@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import pool from '../config/db';
 import bcrypt from 'bcryptjs';
-import { getActiveSessionsList, disconnectWhatsAppSession } from '../services/whatsappManager';
+import { getActiveSessionsList, disconnectWhatsAppSession, startWhatsAppSession, getContainerState } from '../services/whatsappManager';
 
 // 1. List all users across all establishments (Super Admin)
 export const listAllUsers = async (req: Request, res: Response) => {
@@ -62,7 +62,7 @@ export const listWhatsAppSessions = async (req: Request, res: Response) => {
       'SELECT establishment_id, status, phone FROM whatsapp_sessions'
     );
     
-    const sessionsPayload = establishmentsRes.rows.map((est) => {
+    const sessionsPayload = await Promise.all(establishmentsRes.rows.map(async (est) => {
       const sessionDb = sessionsRes.rows.find(s => s.establishment_id === est.id);
       
       // Map standard status values to frontend expected strings ('CONNECTED' or 'DISCONNECTED')
@@ -70,6 +70,10 @@ export const listWhatsAppSessions = async (req: Request, res: Response) => {
       if (sessionDb && sessionDb.status === 'connected') {
         status = 'CONNECTED';
       }
+
+      // Check if container is running
+      const containerName = `barberhub-whatsapp-${est.id}`;
+      const dockerState = await getContainerState(containerName);
       
       return {
         establishment_id: est.id,
@@ -79,9 +83,10 @@ export const listWhatsAppSessions = async (req: Request, res: Response) => {
         is_active: est.is_active,
         expires_at: est.expires_at,
         status: status,
-        phone: sessionDb ? sessionDb.phone : null
+        phone: sessionDb ? sessionDb.phone : null,
+        container_running: dockerState.running
       };
-    });
+    }));
 
     return res.json(sessionsPayload);
   } catch (error) {
@@ -480,5 +485,21 @@ export const deleteEstablishment = async (req: Request, res: Response) => {
     return res.status(500).json({ error: 'Internal server error.' });
   } finally {
     client.release();
+  }
+};
+
+export const startWhatsAppSessionAdmin = async (req: Request, res: Response) => {
+  const { establishmentId } = req.params;
+  try {
+    const estRes = await pool.query('SELECT id FROM establishments WHERE id = $1', [establishmentId]);
+    if (estRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Establishment not found.' });
+    }
+
+    await startWhatsAppSession(String(establishmentId));
+    return res.json({ message: 'WhatsApp bot container initialized successfully.' });
+  } catch (error: any) {
+    console.error('Start whatsapp session admin error:', error);
+    return res.status(500).json({ error: error.message || 'Internal server error.' });
   }
 };

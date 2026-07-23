@@ -54,7 +54,8 @@ import {
   updateEstablishmentCommission,
   updateEstablishmentStatus,
   updateEstablishmentLicense,
-  deleteEstablishment
+  deleteEstablishment,
+  startWhatsAppSessionAdmin
 } from './controllers/adminController';
 
 import {
@@ -607,6 +608,7 @@ router.post('/admin/establishments', verifyToken, requireRole(['admin']), regist
 // Super Admin WhatsApp sessions management
 router.get('/admin/whatsapp-sessions', verifyToken, requireRole(['admin']), listWhatsAppSessions);
 router.post('/admin/whatsapp-sessions/:establishmentId/logout', verifyToken, requireRole(['admin']), logoutWhatsAppSession);
+router.post('/admin/whatsapp-sessions/:establishmentId/start', verifyToken, requireRole(['admin']), startWhatsAppSessionAdmin);
 
 // Super Admin Establishment Commission configuration
 router.put('/admin/establishments/:establishmentId/commission', verifyToken, requireRole(['admin']), updateEstablishmentCommission);

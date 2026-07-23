@@ -76,8 +76,13 @@ export const authClient = async (req: Request, res: Response) => {
 // 2. Fetch Client Info and Dashboard Data
 export const getClientData = async (req: any, res: Response) => {
   const clientId = req.user.id;
+  const phone = req.user.phone;
 
   try {
+    // Fetch all client IDs associated with this phone number to aggregate bookings
+    const clientIdsRes = await pool.query('SELECT id FROM clients WHERE phone = $1', [phone]);
+    const clientIds = clientIdsRes.rows.map(r => r.id);
+
     // 1. Fetch bookings
     const bookingsRes = await pool.query(
       `SELECT a.id, a.appointment_time, a.status, a.cancellation_reason,
@@ -90,9 +95,9 @@ export const getClientData = async (req: any, res: Response) => {
        JOIN users u ON a.barber_id = u.id
        JOIN establishments e ON a.establishment_id = e.id
        LEFT JOIN feedbacks f ON f.appointment_id = a.id
-       WHERE a.client_id = $1
+       WHERE a.client_id = ANY($1)
        ORDER BY a.appointment_time DESC`,
-      [clientId]
+      [clientIds]
     );
 
     // 2. Fetch active plans
@@ -103,9 +108,9 @@ export const getClientData = async (req: any, res: Response) => {
        FROM client_plans cp
        JOIN users b ON cp.barber_id = b.id
        JOIN establishments e ON cp.establishment_id = e.id
-       WHERE cp.client_id = $1 AND cp.is_active = true
+       WHERE cp.client_id = ANY($1) AND cp.is_active = true
        ORDER BY cp.created_at DESC`,
-      [clientId]
+      [clientIds]
     );
 
     // 3. Fetch all establishments (to allow booking)
