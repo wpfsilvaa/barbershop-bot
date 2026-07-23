@@ -15,30 +15,58 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+  redis:
+    image: redis:7-alpine
+    container_name: bot_whatsapp_redis
+    restart: always
+    ports:
+      - "6379:6379"
+
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: bot_whatsapp_backend
     restart: always
-    network_mode: "host"
+    ports:
+      - "5000:5000"
     environment:
       - PORT=5000
       - DB_USER=postgres
-      - DB_HOST=127.0.0.1
+      - DB_HOST=db
       - DB_DATABASE=bot_whatsapp
       - DB_PASSWORD=postgres
       - DB_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
       - JWT_SECRET=8f4a3e2d1c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3
       - CORS_ORIGIN=http://localhost:5173
       - TZ=America/Sao_Paulo
     depends_on:
       - db
+      - redis
     volumes:
       - ./backend:/app
       - /app/node_modules
-      - /app/auth_info_baileys
-      - /var/run/docker.sock:/var/run/docker.sock
+
+  whatsapp-gateway:
+    build:
+      context: ./whatsapp-bot
+      dockerfile: Dockerfile
+    container_name: bot_whatsapp_gateway
+    restart: always
+    environment:
+      - DB_USER=postgres
+      - DB_HOST=db
+      - DB_DATABASE=bot_whatsapp
+      - DB_PASSWORD=postgres
+      - DB_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - TZ=America/Sao_Paulo
+    depends_on:
+      - db
+      - redis
 
   frontend:
     build:
@@ -46,7 +74,8 @@ services:
       dockerfile: Dockerfile
     container_name: bot_whatsapp_frontend
     restart: always
-    network_mode: "host"
+    ports:
+      - "5173:5173"
     depends_on:
       - backend
     volumes:

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import Redis from 'ioredis';
 import pool from './config/db';
 import { login, getMe, registerOwner, changeTempPassword } from './controllers/authController';
 import { listBarbers, createBarber, updateBarber, deleteBarber, listPublicBarbers } from './controllers/barberController';
@@ -323,24 +324,25 @@ router.get(
     const { establishmentId } = req.params;
     try {
       const result = await pool.query(
-        'SELECT status, qr_code FROM whatsapp_sessions WHERE establishment_id = $1',
+        'SELECT status, qr_code, phone, updated_at FROM whatsapp_sessions WHERE establishment_id = $1',
         [establishmentId]
       );
 
       if (result.rows.length === 0) {
         // If not registered yet, start connection asynchronously
         startWhatsAppSession(String(establishmentId)).catch(e => console.error(e));
-        return res.json({ status: 'connecting', qr: null });
+        return res.json({ status: 'connecting', qr: null, phone: null });
       }
 
-      const { status, qr_code } = result.rows[0];
+      const { status, qr_code, phone, updated_at } = result.rows[0];
+      const isStale = updated_at ? (Date.now() - new Date(updated_at).getTime() > 45000) : false;
 
-      if (status === 'disconnected') {
+      if (status === 'disconnected' || ((status === 'qr_ready' || status === 'connecting') && isStale)) {
         startWhatsAppSession(String(establishmentId)).catch(e => console.error(e));
-        return res.json({ status: 'connecting', qr: null });
+        return res.json({ status: 'connecting', qr: null, phone: null });
       }
 
-      return res.json({ status, qr: qr_code });
+      return res.json({ status, qr: qr_code, phone });
     } catch (err) {
       console.error('Fetch bot status error:', err);
       return res.status(500).json({ error: 'Internal server error.' });
@@ -593,6 +595,58 @@ router.delete(
       console.error('Terminate bot chat error:', err);
       return res.status(500).json({ error: 'Internal server error.' });
     }
+  }
+);
+
+// Real-Time SSE (Server-Sent Events) Stream for Chat Updates
+router.get(
+  '/establishments/:establishmentId/bot/chats/sse',
+  verifyToken,
+  checkEstablishmentAccess,
+  async (req: AuthenticatedRequest, res) => {
+    const { establishmentId } = req.params;
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+
+    res.write(`data: ${JSON.stringify({ type: 'connected', establishmentId })}\n\n`);
+
+    const subscriber = new Redis({
+      host: process.env.REDIS_HOST || '127.0.0.1',
+      port: parseInt(process.env.REDIS_PORT || '6379', 10),
+    });
+
+    await subscriber.subscribe('whatsapp-chat-updates');
+
+    const messageHandler = (channel: string, message: string) => {
+      if (channel === 'whatsapp-chat-updates') {
+        try {
+          const data = JSON.parse(message);
+          if (establishmentId === 'all' || data.establishmentId === establishmentId || req.user?.role === 'admin') {
+            res.write(`data: ${message}\n\n`);
+          }
+        } catch (e) {
+          // ignore error
+        }
+      }
+    };
+
+    subscriber.on('message', messageHandler);
+
+    // Keep SSE connection alive with 15s heartbeat pings
+    const pingInterval = setInterval(() => {
+      res.write(': ping\n\n');
+    }, 15000);
+
+    req.on('close', () => {
+      clearInterval(pingInterval);
+      subscriber.off('message', messageHandler);
+      subscriber.unsubscribe('whatsapp-chat-updates');
+      subscriber.quit().catch(() => {});
+    });
   }
 );
 

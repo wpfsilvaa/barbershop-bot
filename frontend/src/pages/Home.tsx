@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Scissors, MapPin, Search, ArrowRight, ShieldAlert } from 'lucide-react';
+import { Scissors, MapPin, Search, ArrowRight, ShieldAlert, Menu, X, User, LayoutDashboard, Home as HomeIcon } from 'lucide-react';
 
 interface EstablishmentCard {
   id: string;
@@ -21,6 +21,7 @@ export const Home: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   useEffect(() => {
     const fetchEstablishments = async () => {
@@ -57,7 +58,8 @@ export const Home: React.FC = () => {
       display: 'flex',
       flexDirection: 'column',
       alignItems: 'center',
-      padding: '24px 16px'
+      padding: '24px 16px',
+      overflowX: 'hidden'
     }}>
       {/* Navbar */}
       <header style={{
@@ -77,7 +79,8 @@ export const Home: React.FC = () => {
           <span style={{ fontSize: '20px', fontWeight: 'bold', letterSpacing: '1px' }}>BARBER<span style={{ color: '#d4af37' }}>HUB</span></span>
         </div>
 
-        <div style={{ display: 'flex', gap: '12px' }}>
+        {/* Desktop Buttons */}
+        <div className="home-desktop-nav" style={{ display: 'flex', gap: '12px' }}>
           <button
             onClick={() => navigate('/portal')}
             style={{
@@ -94,15 +97,8 @@ export const Home: React.FC = () => {
               alignItems: 'center',
               gap: '8px'
             }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.transform = 'translateY(-1px)';
-              e.currentTarget.style.boxShadow = '0 4px 12px rgba(212,175,55,0.25)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.transform = 'translateY(0)';
-              e.currentTarget.style.boxShadow = 'none';
-            }}
           >
+            <User size={16} />
             Portal do Cliente
           </button>
 
@@ -122,19 +118,155 @@ export const Home: React.FC = () => {
               alignItems: 'center',
               gap: '8px'
             }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = '#ffffff';
-              e.currentTarget.style.color = '#000000';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'rgba(255,255,255,0.03)';
-              e.currentTarget.style.color = '#ffffff';
-            }}
           >
+            <LayoutDashboard size={16} />
             Painel Administrativo
           </button>
         </div>
+
+        {/* Mobile Sandwich Button */}
+        <button
+          className="home-mobile-hamburger"
+          onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+          style={{
+            display: 'none',
+            background: 'rgba(255,255,255,0.05)',
+            border: '1px solid rgba(255,255,255,0.1)',
+            color: '#ffffff',
+            padding: '10px',
+            borderRadius: '8px',
+            cursor: 'pointer',
+            alignItems: 'center',
+            justifyContent: 'center'
+          }}
+          aria-label="Abrir menu"
+        >
+          {isMobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
+        </button>
       </header>
+
+      {/* Mobile Backdrop & Drawer Menu */}
+      {isMobileMenuOpen && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100vw',
+          height: '100vh',
+          zIndex: 9999,
+          display: 'flex',
+          justifyContent: 'flex-end',
+          background: 'rgba(0,0,0,0.75)',
+          backdropFilter: 'blur(8px)',
+          animation: 'fadeIn 0.2s ease'
+        }} onClick={() => setIsMobileMenuOpen(false)}>
+          <div style={{
+            width: '80%',
+            maxWidth: '320px',
+            height: '100%',
+            background: '#121216',
+            borderLeft: '1px solid rgba(255,255,255,0.1)',
+            padding: '24px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '24px',
+            boxShadow: '-10px 0 30px rgba(0,0,0,0.8)',
+            animation: 'slideLeft 0.25s ease'
+          }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Scissors size={20} style={{ color: '#d4af37' }} />
+                <span style={{ fontWeight: 'bold', fontSize: '18px' }}>BARBER<span style={{ color: '#d4af37' }}>HUB</span></span>
+              </div>
+              <button 
+                onClick={() => setIsMobileMenuOpen(false)}
+                style={{ background: 'transparent', border: 'none', color: '#ffffff', cursor: 'pointer', padding: '4px' }}
+              >
+                <X size={24} />
+              </button>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', flex: 1 }}>
+              <button
+                onClick={() => { setIsMobileMenuOpen(false); navigate('/'); }}
+                style={{
+                  width: '100%',
+                  padding: '14px 16px',
+                  borderRadius: '10px',
+                  background: 'rgba(255,255,255,0.04)',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  color: '#ffffff',
+                  fontWeight: '600',
+                  fontSize: '15px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px',
+                  cursor: 'pointer',
+                  textAlign: 'left'
+                }}
+              >
+                <HomeIcon size={18} style={{ color: '#d4af37' }} />
+                Início (Catálogo)
+              </button>
+
+              <button
+                onClick={() => { setIsMobileMenuOpen(false); navigate('/portal'); }}
+                style={{
+                  width: '100%',
+                  padding: '14px 16px',
+                  borderRadius: '10px',
+                  background: 'linear-gradient(135deg, #d4af37, #aa820a)',
+                  border: 'none',
+                  color: '#000000',
+                  fontWeight: 'bold',
+                  fontSize: '15px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  boxShadow: '0 4px 14px rgba(212,175,55,0.3)'
+                }}
+              >
+                <User size={18} />
+                Portal do Cliente
+              </button>
+
+              <button
+                onClick={() => { setIsMobileMenuOpen(false); navigate('/login'); }}
+                style={{
+                  width: '100%',
+                  padding: '14px 16px',
+                  borderRadius: '10px',
+                  background: 'rgba(255,255,255,0.04)',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  color: '#ffffff',
+                  fontWeight: '600',
+                  fontSize: '15px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px',
+                  cursor: 'pointer',
+                  textAlign: 'left'
+                }}
+              >
+                <LayoutDashboard size={18} style={{ color: '#d4af37' }} />
+                Painel Administrativo
+              </button>
+            </div>
+
+            <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.3)', textAlign: 'center', paddingTop: '16px', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+              BarberHub Platform &copy; {new Date().getFullYear()}
+            </div>
+          </div>
+          <style>{`
+            @keyframes slideLeft {
+              from { transform: translateX(100%); }
+              to { transform: translateX(0); }
+            }
+          `}</style>
+        </div>
+      )}
 
       {/* Hero Banner */}
       <section style={{

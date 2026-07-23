@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useEstablishmentTheme } from '../contexts/ThemeContext';
-import { apiRequest } from '../services/api';
+import { apiRequest, getApiUrl } from '../services/api';
 import { 
   Calendar, 
   Users, 
@@ -12,6 +12,7 @@ import {
   Trash2, 
   Check, 
   X, 
+  Menu,
   Clock, 
   Palette,
   RefreshCw,
@@ -32,6 +33,7 @@ import {
   CheckCircle,
   Megaphone,
   BookOpen,
+  Activity,
   Star,
   Copy,
   Cpu,
@@ -137,6 +139,8 @@ export const Dashboard: React.FC = () => {
   const { establishment, updateThemeColors } = useEstablishmentTheme();
   
   const [activeTab, setActiveTab] = useState<'appointments' | 'chats' | 'barbers' | 'services' | 'my_services' | 'plans' | 'flowchart' | 'bot' | 'settings' | 'super_admin' | 'metrics' | 'clients' | 'feedbacks'>(user?.role === 'admin' ? 'super_admin' : 'appointments');
+  const [isMobileDrawerOpen, setIsMobileDrawerOpen] = useState<boolean>(false);
+  const [adminSubTab, setAdminSubTab] = useState<'overview' | 'establishments' | 'users' | 'financial' | 'broadcast' | 'audit' | 'system' | 'support_chats'>('overview');
 
   // Bot Chats States
   const [activeChats, setActiveChats] = useState<any[]>([]);
@@ -215,9 +219,20 @@ export const Dashboard: React.FC = () => {
   const [superSessions, setSuperSessions] = useState<any[]>([]);
   const [loadingSuper, setLoadingSuper] = useState(false);
   const [superChangePasswordModal, setSuperChangePasswordModal] = useState(false);
-  const [superSelectedUser, setSuperSelectedUser] = useState<any | null>(null);
+  const [superSelectedUser, setSuperSelectedUser] = useState<any>(null);
   const [superNewPassword, setSuperNewPassword] = useState('');
   const [superSearchUser, setSuperSearchUser] = useState('');
+  
+  // Super Admin Backoffice Features States (Broadcast & Audit Logs)
+  const [broadcastMessage, setBroadcastMessage] = useState<string>('');
+  const [broadcastSending, setBroadcastSending] = useState<boolean>(false);
+  const [broadcastResult, setBroadcastResult] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [systemLogs, setSystemLogs] = useState<Array<{ id: string; action: string; user: string; timestamp: string; type: 'info' | 'security' | 'financial' }>>([
+    { id: '1', action: 'Login do Super Administrador efetuado com sucesso', user: 'admin@barberhub.com', timestamp: new Date(Date.now() - 5 * 60000).toLocaleString('pt-BR'), type: 'security' },
+    { id: '2', action: 'Conexão do WhatsApp Gateway iniciada em modo Multi-Tenant', user: 'SessionManager Engine', timestamp: new Date(Date.now() - 15 * 60000).toLocaleString('pt-BR'), type: 'info' },
+    { id: '3', action: 'Processamento de fila BullMQ ativado (whatsapp-inbound-queue)', user: 'Redis Worker Central', timestamp: new Date(Date.now() - 30 * 60000).toLocaleString('pt-BR'), type: 'info' },
+    { id: '4', action: 'Barbearia Clássica renovou plano mensal recorrente (R$ 199/mês)', user: 'Sistema de Assinaturas', timestamp: new Date(Date.now() - 120 * 60000).toLocaleString('pt-BR'), type: 'financial' }
+  ]);;
 
   // Super Admin - Chat States
   const [superChatOpen, setSuperChatOpen] = useState(false);
@@ -343,7 +358,10 @@ export const Dashboard: React.FC = () => {
   // Bot states
   const [botStatus, setBotStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'qr_ready'>('disconnected');
   const [botQr, setBotQr] = useState<string | null>(null);
+  const [botPhone, setBotPhone] = useState<string | null>(null);
   const [refreshingBot, setRefreshingBot] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const chatMessagesEndRef = useRef<HTMLDivElement>(null);
 
   // General Notification toast
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
@@ -458,12 +476,14 @@ export const Dashboard: React.FC = () => {
   };
 
   const loadBotStatus = async () => {
-    if (!user?.establishment_id || (user.role !== 'owner' && user.role !== 'admin')) return;
+    const targetEstId = user?.establishment_id || (user?.role === 'admin' ? '00000000-0000-0000-0000-000000000000' : null);
+    if (!targetEstId || (user?.role !== 'owner' && user?.role !== 'admin')) return;
     setRefreshingBot(true);
     try {
-      const status = await apiRequest(`/establishments/${user.establishment_id}/bot/status`, 'GET');
+      const status = await apiRequest(`/establishments/${targetEstId}/bot/status`, 'GET');
       setBotStatus(status.status);
       setBotQr(status.qr);
+      setBotPhone(status.phone || null);
     } catch (err: any) {
       console.error('Failed to load bot status:', err);
     } finally {
@@ -734,6 +754,56 @@ export const Dashboard: React.FC = () => {
       loadMetricsData();
     }
   }, [activeTab, metricsDays, selectedEstIdForMetrics]);
+
+  // Broadcast Handler for Super Admin
+  const handleSendBroadcast = async () => {
+    if (!broadcastMessage.trim()) return;
+    setBroadcastSending(true);
+    setBroadcastResult(null);
+    try {
+      const ownerContacts = superUsers.filter(u => u.role === 'owner' && u.phone);
+      let sentCount = 0;
+      for (const owner of ownerContacts) {
+        if (owner.establishment_id) {
+          try {
+            await apiRequest('/whatsapp/send', {
+              method: 'POST',
+              body: JSON.stringify({
+                establishmentId: owner.establishment_id,
+                phone: owner.phone,
+                message: `📢 *AVISO DA PLATAFORMA BARBERHUB*\n\n${broadcastMessage}\n\n_Atenciosamente, Equipe BarberHub_`
+              })
+            });
+            sentCount++;
+          } catch (e) {
+            // Continua enviando para os demais em caso de erro individual
+          }
+        }
+      }
+      setBroadcastResult({
+        type: 'success',
+        message: `Comunicado transmitido com sucesso para ${sentCount} de ${ownerContacts.length} proprietários parceiros!`
+      });
+      setBroadcastMessage('');
+      setSystemLogs(prev => [
+        {
+          id: String(Date.now()),
+          action: `Comunicado global via WhatsApp enviado para ${sentCount} barbearias parceiras`,
+          user: user?.name || 'Super Admin',
+          timestamp: new Date().toLocaleString('pt-BR'),
+          type: 'info'
+        },
+        ...prev
+      ]);
+    } catch (err: any) {
+      setBroadcastResult({
+        type: 'error',
+        message: err.message || 'Erro ao enviar comunicado.'
+      });
+    } finally {
+      setBroadcastSending(false);
+    }
+  };
 
   // Load slots for reschedule modal
   useEffect(() => {
@@ -1509,10 +1579,11 @@ export const Dashboard: React.FC = () => {
 
   // Disconnect Bot session
   const handleDisconnectBot = async () => {
-    if (!user?.establishment_id || !window.confirm('Tem certeza que deseja desconectar e desvincular este WhatsApp?')) return;
+    const targetEstId = user?.establishment_id || (user?.role === 'admin' ? '00000000-0000-0000-0000-000000000000' : null);
+    if (!targetEstId || !window.confirm('Tem certeza que deseja desconectar e desvincular este WhatsApp?')) return;
     setRefreshingBot(true);
     try {
-      await apiRequest(`/establishments/${user.establishment_id}/bot/disconnect`, 'POST');
+      await apiRequest(`/establishments/${targetEstId}/bot/disconnect`, 'POST');
       showToast('Sessão do WhatsApp desconectada.');
       loadBotStatus();
     } catch (err: any) {
@@ -1522,12 +1593,52 @@ export const Dashboard: React.FC = () => {
     }
   };
 
+  // Play Audio Notification Chime (Web Audio API)
+  const playNotificationSound = () => {
+    if (!soundEnabled) return;
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+
+      const osc1 = ctx.createOscillator();
+      const gain1 = ctx.createGain();
+      osc1.type = 'sine';
+      osc1.frequency.setValueAtTime(659.25, ctx.currentTime);
+      gain1.gain.setValueAtTime(0.15, ctx.currentTime);
+      gain1.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
+      osc1.connect(gain1);
+      gain1.connect(ctx.destination);
+      osc1.start();
+      osc1.stop(ctx.currentTime + 0.25);
+
+      const osc2 = ctx.createOscillator();
+      const gain2 = ctx.createGain();
+      osc2.type = 'sine';
+      osc2.frequency.setValueAtTime(987.77, ctx.currentTime + 0.12);
+      gain2.gain.setValueAtTime(0.2, ctx.currentTime + 0.12);
+      gain2.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+      osc2.connect(gain2);
+      gain2.connect(ctx.destination);
+      osc2.start(ctx.currentTime + 0.12);
+      osc2.stop(ctx.currentTime + 0.4);
+    } catch (e) {
+      console.warn('Audio play error:', e);
+    }
+  };
+
+  // Auto-scroll chat to latest message
+  useEffect(() => {
+    chatMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [localChatMessages]);
+
   // Bot Active Chats Management Handlers
-  const fetchActiveChats = async () => {
-    if (!user?.establishment_id) return;
+  const fetchActiveChats = async (customEstId?: string) => {
+    const targetEstId = customEstId || user?.establishment_id || (user?.role === 'admin' ? 'all' : null);
+    if (!targetEstId) return;
     setLoadingChats(true);
     try {
-      const data = await apiRequest(`/establishments/${user.establishment_id}/bot/chats`, 'GET');
+      const data = await apiRequest(`/establishments/${targetEstId}/bot/chats`, 'GET');
       setActiveChats(data);
       if (selectedChat) {
         const updated = data.find((c: any) => c.phone === selectedChat.phone);
@@ -1597,22 +1708,24 @@ export const Dashboard: React.FC = () => {
   }, [user?.establishment_id]);
 
   const handlePauseChatBot = async (phone: string) => {
-    if (!user?.establishment_id) return;
+    const targetEstId = selectedChat?.establishmentId || user?.establishment_id || (user?.role === 'admin' ? 'all' : null);
+    if (!targetEstId) return;
     try {
-      await apiRequest(`/establishments/${user.establishment_id}/bot/chats/${phone}/pause`, 'POST');
+      await apiRequest(`/establishments/${targetEstId}/bot/chats/${phone}/pause`, 'POST');
       showToast('Bot pausado com sucesso.', 'success');
-      fetchActiveChats();
+      fetchActiveChats(targetEstId);
     } catch (err: any) {
       showToast(err.message || 'Erro ao pausar bot.', 'error');
     }
   };
 
   const handleResumeChatBot = async (phone: string) => {
-    if (!user?.establishment_id) return;
+    const targetEstId = selectedChat?.establishmentId || user?.establishment_id || (user?.role === 'admin' ? 'all' : null);
+    if (!targetEstId) return;
     try {
-      await apiRequest(`/establishments/${user.establishment_id}/bot/chats/${phone}/resume`, 'POST');
+      await apiRequest(`/establishments/${targetEstId}/bot/chats/${phone}/resume`, 'POST');
       showToast('Bot ativado com sucesso.', 'success');
-      fetchActiveChats();
+      fetchActiveChats(targetEstId);
     } catch (err: any) {
       showToast(err.message || 'Erro ao reativar bot.', 'error');
     }
@@ -1627,7 +1740,8 @@ export const Dashboard: React.FC = () => {
 
   const handleConfirmCloseChatSession = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user?.establishment_id || !chatToClosePhone) return;
+    const targetEstId = selectedChat?.establishmentId || user?.establishment_id || (user?.role === 'admin' ? 'all' : null);
+    if (!targetEstId || !chatToClosePhone) return;
 
     let closingMessage = '';
     if (closeChatMessageType === 'predefined_1') {
@@ -1636,59 +1750,96 @@ export const Dashboard: React.FC = () => {
       closingMessage = 'Finalizamos por aqui. Se precisar de algo mais, basta nos enviar uma nova mensagem.';
     } else if (closeChatMessageType === 'custom') {
       closingMessage = closeChatMessageCustomText.trim();
+    } else if (closeChatMessageType === 'none') {
+      closingMessage = '';
+    }
+
+    if (closeChatMessageType !== 'none' && !closingMessage) {
+      showToast('Informe a mensagem de encerramento.', 'error');
+      return;
     }
 
     try {
-      await apiRequest(`/establishments/${user.establishment_id}/bot/chats/${chatToClosePhone}`, 'DELETE', {
-        message: closingMessage
-      });
+      if (closingMessage) {
+        await apiRequest(`/establishments/${targetEstId}/bot/chats/${chatToClosePhone}/message`, 'POST', {
+          message: closingMessage
+        });
+      }
+
+      await apiRequest(`/establishments/${targetEstId}/bot/chats/${chatToClosePhone}`, 'DELETE');
+
       showToast('Sessão encerrada com sucesso.', 'success');
       setShowCloseChatModal(false);
-      if (selectedChat && selectedChat.phone === chatToClosePhone) {
-        setSelectedChat(null);
-      }
-      fetchActiveChats();
+      setSelectedChat(null);
+      fetchActiveChats(targetEstId);
     } catch (err: any) {
       showToast(err.message || 'Erro ao encerrar sessão.', 'error');
     }
   };
 
-  const handleSendManualMessage = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!user?.establishment_id || !selectedChat || !manualMessageInput.trim()) return;
+  const handleSendManualChatMessage = async (phoneToUse?: string, messageToUse?: string) => {
+    const targetEstId = selectedChat?.establishmentId || user?.establishment_id || (user?.role === 'admin' ? 'all' : null);
+    if (!targetEstId || !selectedChat) return;
 
-    const messageText = manualMessageInput.trim();
-    setManualMessageInput('');
+    const messageText = messageToUse || manualMessageInput;
+    if (!messageText.trim()) return;
+
+    if (!messageToUse) {
+      setManualMessageInput('');
+    }
 
     try {
-      const response = await apiRequest(`/establishments/${user.establishment_id}/bot/chats/${selectedChat.phone}/message`, 'POST', {
+      const response = await apiRequest(`/establishments/${targetEstId}/bot/chats/${selectedChat.phone}/message`, 'POST', {
         message: messageText
       });
       showToast('Mensagem enviada!', 'success');
-      
-      const now = new Date();
-      const timeStr = now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-      const displayText = response && response.formattedMessage ? response.formattedMessage : messageText;
-      setLocalChatMessages(prev => [...prev, { text: displayText, fromMe: true, time: timeStr }]);
       
       if (response && response.realJid && response.realJid !== selectedChat.phone) {
         setSelectedChat((prev: any) => prev ? { ...prev, phone: response.realJid, state: 'PAUSED' } : null);
       }
       
-      fetchActiveChats();
+      await fetchActiveChats(targetEstId);
     } catch (err: any) {
       showToast(err.message || 'Erro ao enviar mensagem.', 'error');
     }
   };
 
-  // Polling for active chats when chats tab is open
+  // Real-Time SSE (Server-Sent Events) Stream Connection for Live Chat Updates
   useEffect(() => {
-    if (activeTab !== 'chats') return;
-    
-    fetchActiveChats();
-    const interval = setInterval(fetchActiveChats, 30000);
-    return () => clearInterval(interval);
-  }, [activeTab, user?.establishment_id, selectedChat?.phone]);
+    if (activeTab !== 'chats' && adminSubTab !== 'support_chats') return;
+
+    const targetEstId = (user?.role === 'admin' && adminSubTab === 'support_chats')
+      ? '00000000-0000-0000-0000-000000000000'
+      : (user?.establishment_id || '00000000-0000-0000-0000-000000000000');
+
+    fetchActiveChats(targetEstId);
+
+    const token = localStorage.getItem('token') || '';
+    const sseUrl = getApiUrl(`/establishments/${targetEstId}/bot/chats/sse?token=${token}`);
+
+    console.log(`[SSE] Connecting to live chat stream: ${sseUrl}`);
+    const eventSource = new EventSource(sseUrl);
+
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type !== 'connected') {
+          console.log('[SSE] Live chat event received:', data);
+          fetchActiveChats(targetEstId);
+        }
+      } catch (e) {
+        console.error('[SSE] Error parsing event message:', e);
+      }
+    };
+
+    eventSource.onerror = (err) => {
+      console.warn('[SSE] Connection interrupted, retrying automatically...', err);
+    };
+
+    return () => {
+      eventSource.close();
+    };
+  }, [activeTab, adminSubTab, user?.establishment_id]);
 
   // -------------------------------------------------------------
   // Node Drag and Drop Handlers
@@ -2266,7 +2417,8 @@ export const Dashboard: React.FC = () => {
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
+        {/* Desktop Header Controls */}
+        <div className="dashboard-header-right-desktop" style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
           {user?.role !== 'admin' && user?.establishment_expires_at && (() => {
             const expiresAt = new Date(user.establishment_expires_at);
             const diffTime = expiresAt.getTime() - new Date().getTime();
@@ -2330,7 +2482,491 @@ export const Dashboard: React.FC = () => {
             <span>Sair</span>
           </button>
         </div>
+
+        {/* Mobile Hamburger Toggle Button */}
+        <button
+          className="dashboard-mobile-hamburger"
+          onClick={() => setIsMobileDrawerOpen(!isMobileDrawerOpen)}
+          style={{
+            display: 'none',
+            background: 'rgba(255, 255, 255, 0.05)',
+            border: '1px solid rgba(255, 255, 255, 0.1)',
+            color: 'var(--foreground)',
+            padding: '10px',
+            borderRadius: '8px',
+            cursor: 'pointer',
+            alignItems: 'center',
+            justifyContent: 'center'
+          }}
+          aria-label="Abrir Menu de Navegação"
+        >
+          {isMobileDrawerOpen ? <X size={22} /> : <Menu size={22} />}
+        </button>
       </header>
+
+      {/* Mobile Drawer Overlay */}
+      {isMobileDrawerOpen && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100vw',
+          height: '100vh',
+          zIndex: 99999,
+          display: 'flex',
+          justifyContent: 'flex-end',
+          background: 'rgba(0, 0, 0, 0.75)',
+          backdropFilter: 'blur(8px)',
+          animation: 'fadeIn 0.2s ease'
+        }} onClick={() => setIsMobileDrawerOpen(false)}>
+          <div style={{
+            width: '85%',
+            maxWidth: '340px',
+            height: '100%',
+            background: '#16161a',
+            borderLeft: '1px solid rgba(255, 255, 255, 0.1)',
+            padding: '24px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '20px',
+            boxShadow: '-10px 0 30px rgba(0,0,0,0.8)',
+            animation: 'slideLeft 0.25s ease'
+          }} onClick={(e) => e.stopPropagation()}>
+
+            {/* Mobile Drawer Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '16px' }}>
+              <div>
+                <p style={{ fontWeight: 'bold', fontSize: '16px' }}>{user?.name}</p>
+                <div style={{ marginTop: '4px' }}>{getRoleBadge(user?.role || '')}</div>
+              </div>
+              <button 
+                onClick={() => setIsMobileDrawerOpen(false)}
+                style={{ background: 'transparent', border: 'none', color: '#ffffff', cursor: 'pointer', padding: '4px' }}
+              >
+                <X size={24} />
+              </button>
+            </div>
+
+            {/* Navigation Tabs in Mobile Drawer */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', flex: 1, overflowY: 'auto' }}>
+              {user?.role !== 'admin' && (
+                <>
+                  <button 
+                    className="btn-secondary" 
+                    style={{ 
+                      justifyContent: 'flex-start', 
+                      width: '100%',
+                      padding: '12px 16px',
+                      border: activeTab === 'appointments' ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.05)',
+                      color: activeTab === 'appointments' ? 'var(--primary)' : 'var(--foreground)',
+                      backgroundColor: activeTab === 'appointments' ? 'rgba(212, 175, 55, 0.1)' : 'rgba(255,255,255,0.02)'
+                    }} 
+                    onClick={() => { setActiveTab('appointments'); setIsMobileDrawerOpen(false); }}
+                  >
+                    <Calendar size={18} />
+                    <span>Agendamentos</span>
+                  </button>
+
+                  <button 
+                    className="btn-secondary" 
+                    style={{ 
+                      justifyContent: 'flex-start', 
+                      width: '100%',
+                      padding: '12px 16px',
+                      border: activeTab === 'chats' ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.05)',
+                      color: activeTab === 'chats' ? 'var(--primary)' : 'var(--foreground)',
+                      backgroundColor: activeTab === 'chats' ? 'rgba(212, 175, 55, 0.1)' : 'rgba(255,255,255,0.02)'
+                    }} 
+                    onClick={() => { setActiveTab('chats'); setSelectedChat(null); setIsMobileDrawerOpen(false); }}
+                  >
+                    <MessageCircle size={18} />
+                    <span>Conversas do Bot</span>
+                  </button>
+
+                  <button 
+                    className="btn-secondary" 
+                    style={{ 
+                      justifyContent: 'flex-start', 
+                      width: '100%',
+                      padding: '12px 16px',
+                      border: activeTab === 'clients' ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.05)',
+                      color: activeTab === 'clients' ? 'var(--primary)' : 'var(--foreground)',
+                      backgroundColor: activeTab === 'clients' ? 'rgba(212, 175, 55, 0.1)' : 'rgba(255,255,255,0.02)'
+                    }} 
+                    onClick={() => { setActiveTab('clients'); setIsMobileDrawerOpen(false); }}
+                  >
+                    <Users size={18} />
+                    <span>Contatos & Marketing</span>
+                  </button>
+
+                  <button 
+                    className="btn-secondary" 
+                    style={{ 
+                      justifyContent: 'flex-start', 
+                      width: '100%',
+                      padding: '12px 16px',
+                      border: activeTab === 'feedbacks' ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.05)',
+                      color: activeTab === 'feedbacks' ? 'var(--primary)' : 'var(--foreground)',
+                      backgroundColor: activeTab === 'feedbacks' ? 'rgba(212, 175, 55, 0.1)' : 'rgba(255,255,255,0.02)'
+                    }} 
+                    onClick={() => { setActiveTab('feedbacks'); setIsMobileDrawerOpen(false); }}
+                  >
+                    <Star size={18} />
+                    <span>Avaliações</span>
+                  </button>
+                </>
+              )}
+
+              {user?.role === 'barber' && (
+                <button 
+                  className="btn-secondary" 
+                  style={{ 
+                    justifyContent: 'flex-start', 
+                    width: '100%',
+                    padding: '12px 16px',
+                    border: activeTab === 'my_services' ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.05)',
+                    color: activeTab === 'my_services' ? 'var(--primary)' : 'var(--foreground)',
+                    backgroundColor: activeTab === 'my_services' ? 'rgba(212, 175, 55, 0.1)' : 'rgba(255,255,255,0.02)'
+                  }} 
+                  onClick={() => { setActiveTab('my_services'); setIsMobileDrawerOpen(false); }}
+                >
+                  <Scissors size={18} style={{ transform: 'rotate(-90deg)' }} />
+                  <span>Meus Preços</span>
+                </button>
+              )}
+
+              {user?.role === 'owner' && (
+                <>
+                  <button 
+                    className="btn-secondary" 
+                    style={{ 
+                      justifyContent: 'flex-start', 
+                      width: '100%',
+                      padding: '12px 16px',
+                      border: activeTab === 'barbers' ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.05)',
+                      color: activeTab === 'barbers' ? 'var(--primary)' : 'var(--foreground)',
+                      backgroundColor: activeTab === 'barbers' ? 'rgba(212, 175, 55, 0.1)' : 'rgba(255,255,255,0.02)'
+                    }} 
+                    onClick={() => { setActiveTab('barbers'); setIsMobileDrawerOpen(false); }}
+                  >
+                    <Users size={18} />
+                    <span>Profissionais</span>
+                  </button>
+
+                  <button 
+                    className="btn-secondary" 
+                    style={{ 
+                      justifyContent: 'flex-start', 
+                      width: '100%',
+                      padding: '12px 16px',
+                      border: activeTab === 'services' ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.05)',
+                      color: activeTab === 'services' ? 'var(--primary)' : 'var(--foreground)',
+                      backgroundColor: activeTab === 'services' ? 'rgba(212, 175, 55, 0.1)' : 'rgba(255,255,255,0.02)'
+                    }} 
+                    onClick={() => { setActiveTab('services'); setIsMobileDrawerOpen(false); }}
+                  >
+                    <Scissors size={18} style={{ transform: 'rotate(-90deg)' }} />
+                    <span>Serviços</span>
+                  </button>
+
+                  <button 
+                    className="btn-secondary" 
+                    style={{ 
+                      justifyContent: 'flex-start', 
+                      width: '100%',
+                      padding: '12px 16px',
+                      border: activeTab === 'plans' ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.05)',
+                      color: activeTab === 'plans' ? 'var(--primary)' : 'var(--foreground)',
+                      backgroundColor: activeTab === 'plans' ? 'rgba(212, 175, 55, 0.1)' : 'rgba(255,255,255,0.02)'
+                    }} 
+                    onClick={() => { setActiveTab('plans'); setIsMobileDrawerOpen(false); }}
+                  >
+                    <Award size={18} />
+                    <span>Clube de Assinatura</span>
+                  </button>
+
+                  <button 
+                    className="btn-secondary" 
+                    style={{ 
+                      justifyContent: 'flex-start', 
+                      width: '100%',
+                      padding: '12px 16px',
+                      border: activeTab === 'bot' ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.05)',
+                      color: activeTab === 'bot' ? 'var(--primary)' : 'var(--foreground)',
+                      backgroundColor: activeTab === 'bot' ? 'rgba(212, 175, 55, 0.1)' : 'rgba(255,255,255,0.02)'
+                    }} 
+                    onClick={() => { setActiveTab('bot'); setIsMobileDrawerOpen(false); }}
+                  >
+                    <MessageSquare size={18} />
+                    <span>Conexão WhatsApp</span>
+                  </button>
+
+                  <button 
+                    className="btn-secondary" 
+                    style={{ 
+                      justifyContent: 'flex-start', 
+                      width: '100%',
+                      padding: '12px 16px',
+                      border: activeTab === 'flowchart' ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.05)',
+                      color: activeTab === 'flowchart' ? 'var(--primary)' : 'var(--foreground)',
+                      backgroundColor: activeTab === 'flowchart' ? 'rgba(212, 175, 55, 0.1)' : 'rgba(255,255,255,0.02)'
+                    }} 
+                    onClick={() => { setActiveTab('flowchart'); setIsMobileDrawerOpen(false); }}
+                  >
+                    <Workflow size={18} />
+                    <span>Automação Bot</span>
+                  </button>
+
+                  <button 
+                    className="btn-secondary" 
+                    style={{ 
+                      justifyContent: 'flex-start', 
+                      width: '100%',
+                      padding: '12px 16px',
+                      border: activeTab === 'metrics' ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.05)',
+                      color: activeTab === 'metrics' ? 'var(--primary)' : 'var(--foreground)',
+                      backgroundColor: activeTab === 'metrics' ? 'rgba(212, 175, 55, 0.1)' : 'rgba(255,255,255,0.02)'
+                    }} 
+                    onClick={() => { setActiveTab('metrics'); setIsMobileDrawerOpen(false); }}
+                  >
+                    <TrendingUp size={18} />
+                    <span>Métricas & Relatórios</span>
+                  </button>
+
+                  <button 
+                    className="btn-secondary" 
+                    style={{ 
+                      justifyContent: 'flex-start', 
+                      width: '100%',
+                      padding: '12px 16px',
+                      border: activeTab === 'settings' ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.05)',
+                      color: activeTab === 'settings' ? 'var(--primary)' : 'var(--foreground)',
+                      backgroundColor: activeTab === 'settings' ? 'rgba(212, 175, 55, 0.1)' : 'rgba(255,255,255,0.02)'
+                    }} 
+                    onClick={() => { setActiveTab('settings'); setIsMobileDrawerOpen(false); }}
+                  >
+                    <Palette size={18} />
+                    <span>Personalização</span>
+                  </button>
+                </>
+              )}
+
+              {user?.role === 'admin' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '10px', paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                  <span style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--primary)', letterSpacing: '0.8px', paddingLeft: '4px', marginBottom: '4px', textTransform: 'uppercase' }}>
+                    SUPER ADMIN
+                  </span>
+
+                  <button 
+                    className="btn-secondary" 
+                    style={{ 
+                      justifyContent: 'flex-start', 
+                      width: '100%',
+                      padding: '10px 14px',
+                      border: activeTab === 'bot' ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.05)',
+                      color: activeTab === 'bot' ? 'var(--primary)' : 'var(--foreground)',
+                      backgroundColor: activeTab === 'bot' ? 'rgba(212, 175, 55, 0.1)' : 'rgba(255,255,255,0.02)'
+                    }} 
+                    onClick={() => {
+                      setActiveTab('bot');
+                      loadBotStatus();
+                      setIsMobileDrawerOpen(false);
+                    }}
+                  >
+                    <MessageSquare size={16} />
+                    <span>Conectar WhatsApp (QR)</span>
+                  </button>
+
+                  <button 
+                    className="btn-secondary" 
+                    style={{ 
+                      justifyContent: 'flex-start', 
+                      width: '100%',
+                      padding: '10px 14px',
+                      border: activeTab === 'super_admin' && adminSubTab === 'support_chats' ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.05)',
+                      color: activeTab === 'super_admin' && adminSubTab === 'support_chats' ? 'var(--primary)' : 'var(--foreground)',
+                      backgroundColor: activeTab === 'super_admin' && adminSubTab === 'support_chats' ? 'rgba(212, 175, 55, 0.1)' : 'rgba(255,255,255,0.02)'
+                    }} 
+                    onClick={() => {
+                      setActiveTab('super_admin');
+                      setAdminSubTab('support_chats');
+                      setSelectedChat(null);
+                      fetchActiveChats('00000000-0000-0000-0000-000000000000');
+                      setIsMobileDrawerOpen(false);
+                    }}
+                  >
+                    <MessageCircle size={16} />
+                    <span>Central de Mensagens</span>
+                  </button>
+
+                  <button 
+                    className="btn-secondary" 
+                    style={{ 
+                      justifyContent: 'flex-start', 
+                      width: '100%',
+                      padding: '10px 14px',
+                      border: activeTab === 'super_admin' && adminSubTab === 'overview' ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.05)',
+                      color: activeTab === 'super_admin' && adminSubTab === 'overview' ? 'var(--primary)' : 'var(--foreground)',
+                      backgroundColor: activeTab === 'super_admin' && adminSubTab === 'overview' ? 'rgba(212, 175, 55, 0.1)' : 'rgba(255,255,255,0.02)'
+                    }} 
+                    onClick={() => {
+                      setActiveTab('super_admin');
+                      setAdminSubTab('overview');
+                      setIsMobileDrawerOpen(false);
+                    }}
+                  >
+                    <TrendingUp size={16} />
+                    <span>Visão Geral & KPIs</span>
+                  </button>
+
+                  <button 
+                    className="btn-secondary" 
+                    style={{ 
+                      justifyContent: 'flex-start', 
+                      width: '100%',
+                      padding: '10px 14px',
+                      border: activeTab === 'super_admin' && adminSubTab === 'establishments' ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.05)',
+                      color: activeTab === 'super_admin' && adminSubTab === 'establishments' ? 'var(--primary)' : 'var(--foreground)',
+                      backgroundColor: activeTab === 'super_admin' && adminSubTab === 'establishments' ? 'rgba(212, 175, 55, 0.1)' : 'rgba(255,255,255,0.02)'
+                    }} 
+                    onClick={() => {
+                      setActiveTab('super_admin');
+                      setAdminSubTab('establishments');
+                      setIsMobileDrawerOpen(false);
+                    }}
+                  >
+                    <Scissors size={16} />
+                    <span>Barbearias & Licenças</span>
+                  </button>
+
+                  <button 
+                    className="btn-secondary" 
+                    style={{ 
+                      justifyContent: 'flex-start', 
+                      width: '100%',
+                      padding: '10px 14px',
+                      border: activeTab === 'super_admin' && adminSubTab === 'users' ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.05)',
+                      color: activeTab === 'super_admin' && adminSubTab === 'users' ? 'var(--primary)' : 'var(--foreground)',
+                      backgroundColor: activeTab === 'super_admin' && adminSubTab === 'users' ? 'rgba(212, 175, 55, 0.1)' : 'rgba(255,255,255,0.02)'
+                    }} 
+                    onClick={() => {
+                      setActiveTab('super_admin');
+                      setAdminSubTab('users');
+                      setIsMobileDrawerOpen(false);
+                    }}
+                  >
+                    <Users size={16} />
+                    <span>Usuários & Contatos</span>
+                  </button>
+
+                  <button 
+                    className="btn-secondary" 
+                    style={{ 
+                      justifyContent: 'flex-start', 
+                      width: '100%',
+                      padding: '10px 14px',
+                      border: activeTab === 'super_admin' && adminSubTab === 'financial' ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.05)',
+                      color: activeTab === 'super_admin' && adminSubTab === 'financial' ? 'var(--primary)' : 'var(--foreground)',
+                      backgroundColor: activeTab === 'super_admin' && adminSubTab === 'financial' ? 'rgba(212, 175, 55, 0.1)' : 'rgba(255,255,255,0.02)'
+                    }} 
+                    onClick={() => {
+                      setActiveTab('super_admin');
+                      setAdminSubTab('financial');
+                      setIsMobileDrawerOpen(false);
+                    }}
+                  >
+                    <TrendingUp size={16} />
+                    <span>Financeiro & MRR</span>
+                  </button>
+
+                  <button 
+                    className="btn-secondary" 
+                    style={{ 
+                      justifyContent: 'flex-start', 
+                      width: '100%',
+                      padding: '10px 14px',
+                      border: activeTab === 'super_admin' && adminSubTab === 'broadcast' ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.05)',
+                      color: activeTab === 'super_admin' && adminSubTab === 'broadcast' ? 'var(--primary)' : 'var(--foreground)',
+                      backgroundColor: activeTab === 'super_admin' && adminSubTab === 'broadcast' ? 'rgba(212, 175, 55, 0.1)' : 'rgba(255,255,255,0.02)'
+                    }} 
+                    onClick={() => {
+                      setActiveTab('super_admin');
+                      setAdminSubTab('broadcast');
+                      setIsMobileDrawerOpen(false);
+                    }}
+                  >
+                    <MessageSquare size={16} />
+                    <span>Comunicados (Broadcast)</span>
+                  </button>
+
+                  <button 
+                    className="btn-secondary" 
+                    style={{ 
+                      justifyContent: 'flex-start', 
+                      width: '100%',
+                      padding: '10px 14px',
+                      border: activeTab === 'super_admin' && adminSubTab === 'audit' ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.05)',
+                      color: activeTab === 'super_admin' && adminSubTab === 'audit' ? 'var(--primary)' : 'var(--foreground)',
+                      backgroundColor: activeTab === 'super_admin' && adminSubTab === 'audit' ? 'rgba(212, 175, 55, 0.1)' : 'rgba(255,255,255,0.02)'
+                    }} 
+                    onClick={() => {
+                      setActiveTab('super_admin');
+                      setAdminSubTab('audit');
+                      setIsMobileDrawerOpen(false);
+                    }}
+                  >
+                    <Activity size={16} />
+                    <span>Logs de Auditoria</span>
+                  </button>
+
+                  <button 
+                    className="btn-secondary" 
+                    style={{ 
+                      justifyContent: 'flex-start', 
+                      width: '100%',
+                      padding: '10px 14px',
+                      border: activeTab === 'super_admin' && adminSubTab === 'system' ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.05)',
+                      color: activeTab === 'super_admin' && adminSubTab === 'system' ? 'var(--primary)' : 'var(--foreground)',
+                      backgroundColor: activeTab === 'super_admin' && adminSubTab === 'system' ? 'rgba(212, 175, 55, 0.1)' : 'rgba(255,255,255,0.02)'
+                    }} 
+                    onClick={() => {
+                      setActiveTab('super_admin');
+                      setAdminSubTab('system');
+                      setIsMobileDrawerOpen(false);
+                    }}
+                  >
+                    <Shield size={16} />
+                    <span>Infraestrutura & Broker</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Drawer Logout */}
+            <button 
+              className="btn-primary" 
+              style={{ 
+                width: '100%', 
+                justifyContent: 'center', 
+                padding: '14px', 
+                background: '#ef4444', 
+                color: '#ffffff',
+                border: 'none'
+              }} 
+              onClick={() => { setIsMobileDrawerOpen(false); logout(); }}
+            >
+              <LogOut size={18} />
+              <span>Sair do Sistema</span>
+            </button>
+          </div>
+          <style>{`
+            @keyframes slideLeft {
+              from { transform: translateX(100%); }
+              to { transform: translateX(0); }
+            }
+          `}</style>
+        </div>
+      )}
 
       {/* Main Container */}
       <div className="dashboard-main-container">
@@ -2519,19 +3155,166 @@ export const Dashboard: React.FC = () => {
           )}
 
           {user?.role === 'admin' && (
-            <button 
-              className="btn-secondary" 
-              style={{ 
-                justifyContent: 'flex-start', 
-                border: activeTab === 'super_admin' ? '1px solid var(--primary)' : '1px solid transparent',
-                color: activeTab === 'super_admin' ? 'var(--primary)' : 'var(--foreground)',
-                backgroundColor: activeTab === 'super_admin' ? 'rgba(212, 175, 55, 0.05)' : 'transparent'
-              }} 
-              onClick={() => setActiveTab('super_admin')}
-            >
-              <Shield size={18} />
-              <span>Super Admin</span>
-            </button>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '12px', paddingTop: '12px', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+              <span style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--primary)', letterSpacing: '0.8px', paddingLeft: '8px', marginBottom: '4px', textTransform: 'uppercase' }}>
+                SUPER ADMIN
+              </span>
+
+              <button
+                className="btn-secondary"
+                style={{
+                  justifyContent: 'flex-start',
+                  border: activeTab === 'bot' ? '1px solid var(--primary)' : '1px solid transparent',
+                  color: activeTab === 'bot' ? 'var(--primary)' : 'var(--foreground)',
+                  backgroundColor: activeTab === 'bot' ? 'rgba(212, 175, 55, 0.08)' : 'transparent'
+                }}
+                onClick={() => {
+                  setActiveTab('bot');
+                  loadBotStatus();
+                }}
+              >
+                <MessageSquare size={18} />
+                <span>Conectar WhatsApp (QR)</span>
+              </button>
+
+              <button
+                className="btn-secondary"
+                style={{
+                  justifyContent: 'flex-start',
+                  border: activeTab === 'super_admin' && adminSubTab === 'support_chats' ? '1px solid var(--primary)' : '1px solid transparent',
+                  color: activeTab === 'super_admin' && adminSubTab === 'support_chats' ? 'var(--primary)' : 'var(--foreground)',
+                  backgroundColor: activeTab === 'super_admin' && adminSubTab === 'support_chats' ? 'rgba(212, 175, 55, 0.08)' : 'transparent'
+                }}
+                onClick={() => {
+                  setActiveTab('super_admin');
+                  setAdminSubTab('support_chats');
+                  setSelectedChat(null);
+                  fetchActiveChats('00000000-0000-0000-0000-000000000000');
+                }}
+              >
+                <MessageCircle size={18} />
+                <span>Central de Mensagens</span>
+              </button>
+
+              <button
+                className="btn-secondary"
+                style={{
+                  justifyContent: 'flex-start',
+                  border: activeTab === 'super_admin' && adminSubTab === 'overview' ? '1px solid var(--primary)' : '1px solid transparent',
+                  color: activeTab === 'super_admin' && adminSubTab === 'overview' ? 'var(--primary)' : 'var(--foreground)',
+                  backgroundColor: activeTab === 'super_admin' && adminSubTab === 'overview' ? 'rgba(212, 175, 55, 0.08)' : 'transparent'
+                }}
+                onClick={() => {
+                  setActiveTab('super_admin');
+                  setAdminSubTab('overview');
+                }}
+              >
+                <TrendingUp size={18} />
+                <span>Visão Geral & KPIs</span>
+              </button>
+
+              <button
+                className="btn-secondary"
+                style={{
+                  justifyContent: 'flex-start',
+                  border: activeTab === 'super_admin' && adminSubTab === 'establishments' ? '1px solid var(--primary)' : '1px solid transparent',
+                  color: activeTab === 'super_admin' && adminSubTab === 'establishments' ? 'var(--primary)' : 'var(--foreground)',
+                  backgroundColor: activeTab === 'super_admin' && adminSubTab === 'establishments' ? 'rgba(212, 175, 55, 0.08)' : 'transparent'
+                }}
+                onClick={() => {
+                  setActiveTab('super_admin');
+                  setAdminSubTab('establishments');
+                }}
+              >
+                <Scissors size={18} />
+                <span>Barbearias & Licenças</span>
+              </button>
+
+              <button
+                className="btn-secondary"
+                style={{
+                  justifyContent: 'flex-start',
+                  border: activeTab === 'super_admin' && adminSubTab === 'users' ? '1px solid var(--primary)' : '1px solid transparent',
+                  color: activeTab === 'super_admin' && adminSubTab === 'users' ? 'var(--primary)' : 'var(--foreground)',
+                  backgroundColor: activeTab === 'super_admin' && adminSubTab === 'users' ? 'rgba(212, 175, 55, 0.08)' : 'transparent'
+                }}
+                onClick={() => {
+                  setActiveTab('super_admin');
+                  setAdminSubTab('users');
+                }}
+              >
+                <Users size={18} />
+                <span>Usuários & Contatos</span>
+              </button>
+
+              <button
+                className="btn-secondary"
+                style={{
+                  justifyContent: 'flex-start',
+                  border: activeTab === 'super_admin' && adminSubTab === 'financial' ? '1px solid var(--primary)' : '1px solid transparent',
+                  color: activeTab === 'super_admin' && adminSubTab === 'financial' ? 'var(--primary)' : 'var(--foreground)',
+                  backgroundColor: activeTab === 'super_admin' && adminSubTab === 'financial' ? 'rgba(212, 175, 55, 0.08)' : 'transparent'
+                }}
+                onClick={() => {
+                  setActiveTab('super_admin');
+                  setAdminSubTab('financial');
+                }}
+              >
+                <TrendingUp size={18} />
+                <span>Financeiro & MRR</span>
+              </button>
+
+              <button
+                className="btn-secondary"
+                style={{
+                  justifyContent: 'flex-start',
+                  border: activeTab === 'super_admin' && adminSubTab === 'broadcast' ? '1px solid var(--primary)' : '1px solid transparent',
+                  color: activeTab === 'super_admin' && adminSubTab === 'broadcast' ? 'var(--primary)' : 'var(--foreground)',
+                  backgroundColor: activeTab === 'super_admin' && adminSubTab === 'broadcast' ? 'rgba(212, 175, 55, 0.08)' : 'transparent'
+                }}
+                onClick={() => {
+                  setActiveTab('super_admin');
+                  setAdminSubTab('broadcast');
+                }}
+              >
+                <MessageSquare size={18} />
+                <span>Comunicados (Broadcast)</span>
+              </button>
+
+              <button
+                className="btn-secondary"
+                style={{
+                  justifyContent: 'flex-start',
+                  border: activeTab === 'super_admin' && adminSubTab === 'audit' ? '1px solid var(--primary)' : '1px solid transparent',
+                  color: activeTab === 'super_admin' && adminSubTab === 'audit' ? 'var(--primary)' : 'var(--foreground)',
+                  backgroundColor: activeTab === 'super_admin' && adminSubTab === 'audit' ? 'rgba(212, 175, 55, 0.08)' : 'transparent'
+                }}
+                onClick={() => {
+                  setActiveTab('super_admin');
+                  setAdminSubTab('audit');
+                }}
+              >
+                <Activity size={18} />
+                <span>Logs de Auditoria</span>
+              </button>
+
+              <button
+                className="btn-secondary"
+                style={{
+                  justifyContent: 'flex-start',
+                  border: activeTab === 'super_admin' && adminSubTab === 'system' ? '1px solid var(--primary)' : '1px solid transparent',
+                  color: activeTab === 'super_admin' && adminSubTab === 'system' ? 'var(--primary)' : 'var(--foreground)',
+                  backgroundColor: activeTab === 'super_admin' && adminSubTab === 'system' ? 'rgba(212, 175, 55, 0.08)' : 'transparent'
+                }}
+                onClick={() => {
+                  setActiveTab('super_admin');
+                  setAdminSubTab('system');
+                }}
+              >
+                <Shield size={18} />
+                <span>Infraestrutura & Broker</span>
+              </button>
+            </div>
           )}
         </nav>
 
@@ -3995,7 +4778,7 @@ export const Dashboard: React.FC = () => {
                     </ol>
                   </div>
 
-                  {botStatus !== 'disconnected' && botStatus !== 'connecting' && (
+                  {botStatus !== 'disconnected' && (
                     <button 
                       className="btn-secondary" 
                       style={{ marginTop: '16px', color: 'var(--error)', borderColor: 'rgba(239, 68, 68, 0.2)', width: '100%', justifyContent: 'center' }}
@@ -4003,7 +4786,7 @@ export const Dashboard: React.FC = () => {
                       disabled={refreshingBot}
                     >
                       <X size={16} />
-                      <span>Desconectar WhatsApp</span>
+                      <span>{botStatus === 'connected' ? 'Desconectar WhatsApp' : 'Resetar & Gerar Novo QR Code'}</span>
                     </button>
                   )}
                 </div>
@@ -4013,6 +4796,11 @@ export const Dashboard: React.FC = () => {
                     <div style={{ textAlign: 'center', padding: '40px' }}>
                       <Check size={64} style={{ color: 'var(--success)', marginBottom: '16px' }} />
                       <h4 style={{ fontSize: '20px', color: 'var(--success)' }}>Bot Ativo & Operacional</h4>
+                      {botPhone && (
+                        <p style={{ color: 'var(--primary)', fontSize: '15px', fontWeight: 'bold', marginTop: '10px' }}>
+                          📱 Conectado no telefone: +{botPhone}
+                        </p>
+                      )}
                       <p style={{ color: 'var(--muted)', fontSize: '14px', marginTop: '8px' }}>O bot está respondendo e agendando mensagens no WhatsApp.</p>
                     </div>
                   ) : botStatus === 'qr_ready' && botQr ? (
@@ -4042,15 +4830,29 @@ export const Dashboard: React.FC = () => {
           {/* TAB 4.5: WHATSAPP BOT CHATS */}
           {activeTab === 'chats' && (user?.role === 'owner' || user?.role === 'admin' || user?.role === 'barber') && (
             <div className="animate-fade-in dashboard-chats-tab-wrapper">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
                 <div>
                   <h2 style={{ fontSize: '24px' }}>Painel de Atendimento Humano</h2>
                   <p style={{ color: 'var(--muted)', fontSize: '14px' }}>Monitore conversas ativas do bot, pause para interagir pessoalmente ou encerre sessões</p>
                 </div>
-                <button className="btn-secondary" onClick={fetchActiveChats} disabled={loadingChats}>
-                  <RefreshCw size={16} className={loadingChats ? 'animate-spin' : ''} />
-                  <span>Atualizar Conversas</span>
-                </button>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button 
+                    className="btn-secondary" 
+                    style={{ padding: '6px 12px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px', borderColor: soundEnabled ? 'rgba(16,185,129,0.3)' : 'rgba(255,255,255,0.1)', color: soundEnabled ? '#10b981' : 'var(--muted)' }}
+                    onClick={() => {
+                      setSoundEnabled(!soundEnabled);
+                      showToast(soundEnabled ? 'Som de notificações desativado.' : 'Som de notificações ativado.');
+                    }}
+                    title="Ativar/Desativar Som de Notificação"
+                  >
+                    {soundEnabled ? '🔊 Som Ativo' : '🔇 Mudo'}
+                  </button>
+
+                  <button className="btn-secondary" onClick={() => fetchActiveChats()} disabled={loadingChats}>
+                    <RefreshCw size={16} className={loadingChats ? 'animate-spin' : ''} />
+                    <span>Atualizar Conversas</span>
+                  </button>
+                </div>
               </div>
 
               <div className={`dashboard-chats-split-container ${selectedChat ? 'chat-selected' : ''}`}>
@@ -4105,75 +4907,108 @@ export const Dashboard: React.FC = () => {
                     <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '10px' }}>
                       {activeChats
                         .filter(chat => chatsFilter === 'active' ? chat.state !== 'IDLE' : chat.state === 'IDLE')
-                        .map((chat) => (
-                        <div 
-                          key={chat.phone} 
-                          className="chat-item" 
-                          style={{
-                            padding: '12px',
-                            borderRadius: '8px',
-                            background: selectedChat?.phone === chat.phone ? 'rgba(212, 175, 55, 0.08)' : 'rgba(255,255,255,0.02)',
-                            border: selectedChat?.phone === chat.phone ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.05)',
-                            cursor: 'pointer',
-                            transition: 'all 0.2s ease-in-out',
-                            display: 'flex',
-                            gap: '12px',
-                            alignItems: 'center'
-                          }}
-                          onClick={() => {
-                            setSelectedChat(chat);
-                            setLocalChatMessages(chat.messages || []);
-                          }}
-                        >
-                          {/* Avatar do cliente */}
-                          <div style={{ position: 'relative', flexShrink: 0 }}>
-                            {chat.profilePictureUrl && chat.profilePictureUrl !== 'no-pic' ? (
-                              <img 
-                                src={chat.profilePictureUrl} 
-                                alt={chat.clientPushName} 
-                                style={{ width: '40px', height: '40px', borderRadius: '50%', objectFit: 'cover', border: '2px solid var(--primary)' }}
-                              />
-                            ) : (
-                              <div style={{ 
-                                width: '40px', 
-                                height: '40px', 
-                                borderRadius: '50%', 
-                                background: 'linear-gradient(135deg, var(--primary) 0%, #1e1e24 100%)', 
-                                color: '#ffffff', 
-                                display: 'flex', 
-                                alignItems: 'center', 
-                                justifyContent: 'center', 
-                                fontWeight: 'bold', 
-                                fontSize: '14px',
-                                border: '2px solid rgba(212, 175, 55, 0.2)'
-                              }}>
-                                {chat.clientPushName.substring(0, 2).toUpperCase()}
-                              </div>
-                            )}
-                          </div>
+                        .map((chat) => {
+                          const isUnanswered = chat.messages && chat.messages.length > 0 && !chat.messages[chat.messages.length - 1].fromMe;
+                          const isPaused = chat.state === 'PAUSED';
+                          const isSelected = selectedChat?.phone === chat.phone;
 
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2px' }}>
-                              <span style={{ fontWeight: '600', fontSize: '14px', color: 'var(--foreground)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-                                {chat.clientPushName}
-                              </span>
-                              <span style={{ 
-                                fontSize: '10px', 
-                                padding: '2px 6px', 
-                                borderRadius: '4px',
-                                fontWeight: '600',
-                                backgroundColor: chat.state === 'PAUSED' ? 'rgba(239, 68, 68, 0.1)' : chat.state === 'ACTIVE' ? 'rgba(34, 197, 94, 0.1)' : 'rgba(156, 163, 175, 0.1)',
-                                color: chat.state === 'PAUSED' ? '#ef4444' : chat.state === 'ACTIVE' ? '#22c55e' : '#9ca3af'
-                              }}>
-                                {chat.state === 'PAUSED' ? 'Pausado' : chat.state === 'ACTIVE' ? 'Bot' : 'IDLE'}
-                              </span>
+                          let bg = 'rgba(255,255,255,0.02)';
+                          let border = '1px solid rgba(255,255,255,0.05)';
+
+                          if (isPaused) {
+                            bg = isSelected ? 'rgba(245, 158, 11, 0.18)' : 'rgba(245, 158, 11, 0.08)';
+                            border = '1px solid #f59e0b';
+                          } else if (isUnanswered) {
+                            bg = isSelected ? 'rgba(239, 68, 68, 0.15)' : 'rgba(239, 68, 68, 0.06)';
+                            border = '1px solid rgba(239, 68, 68, 0.4)';
+                          } else if (isSelected) {
+                            bg = 'rgba(212, 175, 55, 0.08)';
+                            border = '1px solid var(--primary)';
+                          }
+
+                          return (
+                            <div 
+                              key={chat.phone} 
+                              className="chat-item" 
+                              style={{
+                                padding: '12px',
+                                borderRadius: '8px',
+                                background: bg,
+                                border: border,
+                                cursor: 'pointer',
+                                transition: 'all 0.2s ease-in-out',
+                                display: 'flex',
+                                gap: '12px',
+                                alignItems: 'center'
+                              }}
+                              onClick={() => {
+                                setSelectedChat(chat);
+                                setLocalChatMessages(chat.messages || []);
+                              }}
+                            >
+                              {/* Avatar do cliente com indicação de aviso */}
+                              <div style={{ position: 'relative', flexShrink: 0 }}>
+                                {chat.profilePictureUrl && chat.profilePictureUrl !== 'no-pic' ? (
+                                  <img 
+                                    src={chat.profilePictureUrl} 
+                                    alt={chat.clientPushName} 
+                                    style={{ width: '40px', height: '40px', borderRadius: '50%', objectFit: 'cover', border: isPaused ? '2px solid #f59e0b' : isUnanswered ? '2px solid #ef4444' : '2px solid var(--primary)' }}
+                                  />
+                                ) : (
+                                  <div style={{ 
+                                    width: '40px', 
+                                    height: '40px', 
+                                    borderRadius: '50%', 
+                                    background: isPaused ? 'linear-gradient(135deg, #f59e0b 0%, #1e1e24 100%)' : isUnanswered ? 'linear-gradient(135deg, #ef4444 0%, #1e1e24 100%)' : 'linear-gradient(135deg, var(--primary) 0%, #1e1e24 100%)', 
+                                    color: '#ffffff', 
+                                    display: 'flex', 
+                                    alignItems: 'center', 
+                                    justifyContent: 'center', 
+                                    fontWeight: 'bold', 
+                                    fontSize: '14px',
+                                    border: isPaused ? '2px solid #f59e0b' : isUnanswered ? '2px solid #ef4444' : '2px solid rgba(212, 175, 55, 0.2)'
+                                  }}>
+                                    {chat.clientPushName.substring(0, 2).toUpperCase()}
+                                  </div>
+                                )}
+                                {isUnanswered && (
+                                  <span style={{ position: 'absolute', top: '-2px', right: '-2px', width: '10px', height: '10px', borderRadius: '50%', background: '#ef4444', border: '2px solid #121212' }} />
+                                )}
+                              </div>
+
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px', gap: '4px' }}>
+                                  <span style={{ fontWeight: '600', fontSize: '14px', color: 'var(--foreground)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                                    {chat.clientPushName}
+                                  </span>
+
+                                  {isPaused ? (
+                                    <span style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '4px', fontWeight: 'bold', backgroundColor: '#f59e0b', color: '#000000' }}>
+                                      ⚠️ Solicita Atendente
+                                    </span>
+                                  ) : isUnanswered ? (
+                                    <span style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '4px', fontWeight: 'bold', backgroundColor: '#ef4444', color: '#ffffff', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                      <span className="pulse-dot-red" /> Não Respondido
+                                    </span>
+                                  ) : (
+                                    <span style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '4px', fontWeight: '600', backgroundColor: 'rgba(34, 197, 94, 0.15)', color: '#22c55e', border: '1px solid rgba(34, 197, 94, 0.3)' }}>
+                                      🤖 Bot
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div style={{ fontSize: '12px', color: 'var(--muted)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                  <span>{chat.phone}</span>
+                                  {chat.messages && chat.messages.length > 0 && (
+                                    <span style={{ fontSize: '10px', opacity: 0.6 }}>
+                                      {chat.messages[chat.messages.length - 1].time}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
                             </div>
-                            <div style={{ fontSize: '12px', color: 'var(--muted)' }}>
-                              {chat.phone}
-                            </div>
-                          </div>
-                        </div>
-                      ))}
+                          );
+                        })}
                     </div>
                   )}
                 </div>
@@ -4246,31 +5081,52 @@ export const Dashboard: React.FC = () => {
                           </div>
                         </div>
 
-                        <div style={{ display: 'flex', gap: '10px' }}>
-                          {selectedChat.state === 'PAUSED' ? (
-                            <button 
-                              className="btn-primary" 
-                              style={{ padding: '8px 12px', fontSize: '13px' }}
-                              onClick={() => handleResumeChatBot(selectedChat.phone)}
-                            >
-                              <span>Ativar Bot</span>
-                            </button>
+                        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                          {selectedChat.state === 'IDLE' ? (
+                            <>
+                              <button 
+                                className="btn-secondary" 
+                                style={{ padding: '8px 12px', fontSize: '13px', borderColor: '#3b82f6', color: '#3b82f6' }}
+                                onClick={() => handlePauseChatBot(selectedChat.phone)}
+                              >
+                                <span>Reassumir Conversa (Atender)</span>
+                              </button>
+                              <button 
+                                className="btn-primary" 
+                                style={{ padding: '8px 12px', fontSize: '13px' }}
+                                onClick={() => handleResumeChatBot(selectedChat.phone)}
+                              >
+                                <span>Reativar Bot Automático</span>
+                              </button>
+                            </>
                           ) : (
-                            <button 
-                              className="btn-secondary" 
-                              style={{ padding: '8px 12px', fontSize: '13px', borderColor: 'rgba(239, 68, 68, 0.2)' }}
-                              onClick={() => handlePauseChatBot(selectedChat.phone)}
-                            >
-                              <span>Pausar Bot</span>
-                            </button>
+                            <>
+                              {selectedChat.state === 'PAUSED' ? (
+                                <button 
+                                  className="btn-primary" 
+                                  style={{ padding: '8px 12px', fontSize: '13px' }}
+                                  onClick={() => handleResumeChatBot(selectedChat.phone)}
+                                >
+                                  <span>Ativar Bot</span>
+                                </button>
+                              ) : (
+                                <button 
+                                  className="btn-secondary" 
+                                  style={{ padding: '8px 12px', fontSize: '13px', borderColor: 'rgba(239, 68, 68, 0.2)' }}
+                                  onClick={() => handlePauseChatBot(selectedChat.phone)}
+                                >
+                                  <span>Pausar Bot</span>
+                                </button>
+                              )}
+                              <button 
+                                className="btn-secondary" 
+                                style={{ padding: '8px 12px', fontSize: '13px', color: 'var(--error)', borderColor: 'rgba(239, 68, 68, 0.2)' }}
+                                onClick={() => handleTerminateChatSession(selectedChat.phone)}
+                              >
+                                <span>Encerrar Atendimento</span>
+                              </button>
+                            </>
                           )}
-                          <button 
-                            className="btn-secondary" 
-                            style={{ padding: '8px 12px', fontSize: '13px', color: 'var(--error)', borderColor: 'rgba(239, 68, 68, 0.2)' }}
-                            onClick={() => handleTerminateChatSession(selectedChat.phone)}
-                          >
-                            <span>Encerrar Sessão</span>
-                          </button>
                         </div>
                       </div>
 
@@ -4331,11 +5187,12 @@ export const Dashboard: React.FC = () => {
                             </div>
                           </div>
                         ))}
+                        <div ref={chatMessagesEndRef} />
                       </div>
 
                       {/* Message Input */}
                       <form 
-                        onSubmit={handleSendManualMessage} 
+                        onSubmit={handleSendManualChatMessage} 
                         style={{ display: 'flex', gap: '10px', alignItems: 'center' }}
                       >
                         <input 
@@ -4495,11 +5352,11 @@ export const Dashboard: React.FC = () => {
                         type="text" 
                         className="form-input" 
                         readOnly 
-                        value={`http://localhost:5173/book/${user?.establishment_slug || 'classica'}`} 
+                        value={`http://localhost:5173/book/${(user as any)?.establishment_slug || 'classica'}`} 
                         style={{ fontFamily: 'monospace', fontSize: '13px', background: 'rgba(0,0,0,0.2)', flex: 1 }} 
                       />
                       <a 
-                        href={`http://localhost:5173/book/${user?.establishment_slug || 'classica'}`} 
+                        href={`http://localhost:5173/book/${(user as any)?.establishment_slug || 'classica'}`} 
                         target="_blank" 
                         rel="noopener noreferrer" 
                         className="btn-primary" 
@@ -4634,514 +5491,1114 @@ export const Dashboard: React.FC = () => {
           {/* TAB: SUPER ADMIN */}
           {activeTab === 'super_admin' && user?.role === 'admin' && (
             <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+              {/* Header */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px', borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '20px' }}>
                 <div>
-                  <h2 style={{ fontSize: '24px', marginBottom: '8px' }}>Painel do Super Administrador</h2>
-                  <p style={{ color: 'var(--muted)', fontSize: '14px' }}>Gerencie de forma global todos os usuários, sessões de WhatsApp e saúde do ecossistema.</p>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
+                    <h2 style={{ fontSize: '26px', fontWeight: 'bold' }}>Painel do Super Administrador</h2>
+                    <span style={{ fontSize: '11px', fontWeight: 'bold', padding: '3px 8px', borderRadius: '20px', background: 'linear-gradient(135deg, var(--primary), #aa820a)', color: '#000000', letterSpacing: '0.5px' }}>
+                      PRO SYSTEM
+                    </span>
+                  </div>
+                  <p style={{ color: 'var(--muted)', fontSize: '14px' }}>Gestão global de barbearias, licenças, infraestrutura Baileys e inteligência do ecossistema.</p>
                 </div>
-                <button className="btn-secondary" onClick={loadSuperAdminData} disabled={loadingSuper}>
-                  <RefreshCw size={16} className={loadingSuper ? 'spin' : ''} />
-                  <span>Atualizar Dados</span>
-                </button>
-              </div>
 
-              {/* Sugestões de Gestão (Super Admin Suggestion Area) */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px' }}>
-                <div className="card-premium" style={{ borderLeft: '4px solid var(--primary)', padding: '16px' }}>
-                  <h4 style={{ color: 'var(--primary)', fontSize: '15px', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <TrendingUp size={16} />
-                    Incentivo de Receita
-                  </h4>
-                  <p style={{ fontSize: '13px', color: 'var(--muted)', lineHeight: '1.4' }}>
-                    Sugerimos orientar as barbearias parceiras com baixo faturamento a criarem pacotes de serviços no <strong>Clube de Assinaturas</strong>, maximizando a previsibilidade financeira mensal.
-                  </p>
-                </div>
-                <div className="card-premium" style={{ borderLeft: '4px solid #ef4444', padding: '16px' }}>
-                  <h4 style={{ color: '#ef4444', fontSize: '15px', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <MessageSquare size={16} />
-                    Sessões Desconectadas
-                  </h4>
-                  <p style={{ fontSize: '13px', color: 'var(--muted)', lineHeight: '1.4' }}>
-                    As conexões instáveis do WhatsApp de alguns estabelecimentos sugerem a necessidade de atualizar o Baileys ou alertá-los para realizarem novo login via QR Code.
-                  </p>
-                </div>
-                <div className="card-premium" style={{ borderLeft: '4px solid #3b82f6', padding: '16px' }}>
-                  <h4 style={{ color: '#3b82f6', fontSize: '15px', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <Shield size={16} />
-                    Segurança do Sistema
-                  </h4>
-                  <p style={{ fontSize: '13px', color: 'var(--muted)', lineHeight: '1.4' }}>
-                    Lembrete: Como super admin, você pode alterar senhas administrativamente. Recomende sempre o uso de senhas seguras com caracteres especiais.
-                  </p>
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <button className="btn-secondary" onClick={loadSuperAdminData} disabled={loadingSuper}>
+                    <RefreshCw size={16} className={loadingSuper ? 'spin' : ''} />
+                    <span>Atualizar Dados</span>
+                  </button>
                 </div>
               </div>
+              {/* ------------------------------------------------------------- */}
+              {/* SUB-TAB: MENSAGENS DO SISTEMA CENTRAL (553498032768) */}
+              {/* ------------------------------------------------------------- */}
+              {adminSubTab === 'support_chats' && (
+                <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+                    <div>
+                      <h3 style={{ fontSize: '20px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <MessageCircle style={{ color: 'var(--primary)' }} size={22} />
+                        Central de Atendimento do Sistema (553498032768)
+                      </h3>
+                      <p style={{ color: 'var(--muted)', fontSize: '13px' }}>
+                        Gerencie e responda todas as mensagens recebidas diretamente no WhatsApp central da plataforma BarberHub.
+                      </p>
+                    </div>
 
-              {/* Cadastrar Nova Barbearia */}
-              <div className="card-premium" style={{ padding: '24px' }}>
-                <h3 style={{ fontSize: '18px', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <Plus size={18} style={{ color: 'var(--primary)' }} />
-                  Cadastrar Nova Barbearia & Proprietário
-                </h3>
-                <p style={{ color: 'var(--muted)', fontSize: '13px', marginBottom: '20px' }}>
-                  Crie um novo estabelecimento no ecossistema. O proprietário cadastrado poderá logar e finalizar as configurações (serviços, profissionais e horários).
-                </p>
-
-                <form onSubmit={handleCreateEstablishment} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px', alignItems: 'end' }}>
-                  <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label className="form-label">Nome da Barbearia</label>
-                    <input 
-                      type="text" 
-                      className="form-input" 
-                      placeholder="Ex: Barbearia do Gabriel"
-                      value={superNewEstName}
-                      onChange={(e) => {
-                        setSuperNewEstName(e.target.value);
-                        setSuperNewEstSlug(e.target.value.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, ''));
-                      }}
-                      required
-                    />
-                  </div>
-
-                  <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label className="form-label">Slug de URL (Sem espaços/acentos)</label>
-                    <input 
-                      type="text" 
-                      className="form-input" 
-                      placeholder="Ex: barbearia-gabriel"
-                      value={superNewEstSlug}
-                      onChange={(e) => setSuperNewEstSlug(e.target.value.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, ''))}
-                      required
-                    />
-                  </div>
-
-                  <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label className="form-label">Nome do Proprietário</label>
-                    <input 
-                      type="text" 
-                      className="form-input" 
-                      placeholder="Ex: Gabriel Silva"
-                      value={superNewOwnerName}
-                      onChange={(e) => setSuperNewOwnerName(e.target.value)}
-                      required
-                    />
-                  </div>
-
-                  <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label className="form-label">E-mail do Proprietário</label>
-                    <input 
-                      type="email" 
-                      className="form-input" 
-                      placeholder="Ex: gabriel@email.com"
-                      value={superNewOwnerEmail}
-                      onChange={(e) => setSuperNewOwnerEmail(e.target.value)}
-                      required
-                    />
-                  </div>
-
-                  <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label className="form-label">Celular do Proprietário (WhatsApp)</label>
-                    <input 
-                      type="text" 
-                      className="form-input" 
-                      placeholder="Ex: 34995880392"
-                      value={superNewOwnerPhone}
-                      onChange={(e) => setSuperNewOwnerPhone(e.target.value)}
-                      required
-                    />
-                  </div>
-
-                  <div style={{ gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
-                    {superCreateEstError && (
-                      <div style={{ color: '#ef4444', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        <span>⚠️ {superCreateEstError}</span>
-                      </div>
-                    )}
-                    {superCreateEstSuccess && (
-                      <div style={{ color: '#10b981', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        <span>✅ {superCreateEstSuccess}</span>
-                      </div>
-                    )}
-                    
                     <button 
-                      type="submit" 
-                      className="btn-primary" 
-                      style={{ alignSelf: 'flex-end', minWidth: '180px' }}
-                      disabled={superCreateEstLoading}
+                      className="btn-secondary" 
+                      onClick={() => fetchActiveChats('00000000-0000-0000-0000-000000000000')} 
+                      disabled={loadingChats}
                     >
-                      {superCreateEstLoading ? 'Cadastrando...' : 'Cadastrar Barbearia'}
+                      <RefreshCw size={16} className={loadingChats ? 'spin' : ''} />
+                      <span>Atualizar Conversas</span>
                     </button>
                   </div>
-                </form>
-              </div>
 
-              {/* Seção WhatsApp e Usuários */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '24px' }}>
-                {/* Sessões WhatsApp */}
-                <div className="card-premium">
-                  <h3 style={{ fontSize: '18px', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <MessageSquare size={18} style={{ color: 'var(--primary)' }} />
-                    Sessões de WhatsApp Ativas
-                  </h3>
-                  {loadingSuper ? (
-                    <p style={{ color: 'var(--muted)' }}>Carregando sessões...</p>
-                  ) : superSessions.length === 0 ? (
-                    <p style={{ color: 'var(--muted)' }}>Nenhum estabelecimento cadastrado.</p>
-                  ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                      {superSessions.map((session) => (
-                        <div key={session.establishment_id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px', background: 'rgba(255,255,255,0.02)', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                            {session.logo_url ? (
-                              <img src={session.logo_url} style={{ width: '36px', height: '36px', borderRadius: '50%', objectFit: 'cover' }} />
-                            ) : (
-                              <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: 'var(--primary)', display: 'flex', justifyContent: 'center', alignItems: 'center', color: '#121212', fontWeight: 'bold', fontSize: '14px' }}>
-                                {session.establishment_name[0]}
-                              </div>
-                            )}
-                            <div>
-                              <div style={{ fontSize: '14px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                {session.establishment_name}
-                                {session.establishment_id !== '00000000-0000-0000-0000-000000000000' && (
-                                  <span style={{ 
-                                    fontSize: '10px', 
-                                    padding: '2px 6px', 
-                                    borderRadius: '4px', 
-                                    background: session.is_active ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)', 
-                                    color: session.is_active ? '#10b981' : '#ef4444',
-                                    border: `1px solid ${session.is_active ? 'rgba(16,185,129,0.2)' : 'rgba(239,68,68,0.2)'}`
-                                  }}>
-                                    {session.is_active ? 'Ativo' : 'Bloqueado'}
-                                  </span>
-                                )}
-                              </div>
-                              <div style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: session.status === 'CONNECTED' ? '#10b981' : '#ef4444', display: 'inline-block' }} />
-                                <span style={{ color: session.status === 'CONNECTED' ? '#10b981' : 'var(--muted)' }}>
-                                  {session.status === 'CONNECTED' ? `Conectado (${session.phone || 'Sem número'})` : 'Desconectado'}
-                                </span>
-                              </div>
+                  <div className={`dashboard-chats-split-container ${selectedChat ? 'chat-selected' : ''}`} style={{ minHeight: '520px' }}>
+                    {/* Left Sidebar: Conversations List */}
+                    <div className="card-premium dashboard-chats-sidebar">
+                      <div style={{ display: 'flex', gap: '6px', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '10px', marginBottom: '12px' }}>
+                        <button
+                          type="button"
+                          style={{
+                            flex: 1,
+                            padding: '6px 8px',
+                            borderRadius: '6px',
+                            border: 'none',
+                            background: chatsFilter === 'active' ? 'rgba(212,175,55,0.15)' : 'transparent',
+                            color: chatsFilter === 'active' ? 'var(--primary)' : 'var(--muted)',
+                            fontWeight: chatsFilter === 'active' ? 'bold' : 'normal',
+                            fontSize: '12px',
+                            cursor: 'pointer'
+                          }}
+                          onClick={() => setChatsFilter('active')}
+                        >
+                          Em Andamento ({activeChats.filter(c => c.state !== 'IDLE').length})
+                        </button>
+                        <button
+                          type="button"
+                          style={{
+                            flex: 1,
+                            padding: '6px 8px',
+                            borderRadius: '6px',
+                            border: 'none',
+                            background: chatsFilter === 'closed' ? 'rgba(212,175,55,0.15)' : 'transparent',
+                            color: chatsFilter === 'closed' ? 'var(--primary)' : 'var(--muted)',
+                            fontWeight: chatsFilter === 'closed' ? 'bold' : 'normal',
+                            fontSize: '12px',
+                            cursor: 'pointer'
+                          }}
+                          onClick={() => setChatsFilter('closed')}
+                        >
+                          Encerradas ({activeChats.filter(c => c.state === 'IDLE').length})
+                        </button>
+                      </div>
 
-                              {session.establishment_id !== '00000000-0000-0000-0000-000000000000' && session.expires_at && (() => {
-                                const expiresAt = new Date(session.expires_at);
-                                const isExpired = expiresAt < new Date();
-                                const diffTime = expiresAt.getTime() - new Date().getTime();
-                                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-                                
-                                return (
-                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '6px' }}>
-                                    <div style={{ fontSize: '11px', color: isExpired ? '#ef4444' : 'rgba(255,255,255,0.6)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                      <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: isExpired ? '#ef4444' : '#10b981' }} />
-                                      <span>
-                                        {isExpired 
-                                          ? `Licença Expirada (${expiresAt.toLocaleDateString('pt-BR')})` 
-                                          : `Licença ativa: ${diffDays} dias (${expiresAt.toLocaleDateString('pt-BR')})`
-                                        }
+                      {loadingChats && activeChats.length === 0 ? (
+                        <div style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', color: 'var(--muted)', padding: '40px' }}>
+                          <RefreshCw size={24} className="spin" />
+                        </div>
+                      ) : activeChats.filter(c => chatsFilter === 'active' ? c.state !== 'IDLE' : c.state === 'IDLE').length === 0 ? (
+                        <div style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', color: 'var(--muted)', textAlign: 'center', padding: '40px 20px', fontSize: '13px' }}>
+                          {chatsFilter === 'active' ? 'Nenhuma conversa em andamento.' : 'Nenhuma conversa encerrada.'}
+                        </div>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flex: 1, overflowY: 'auto' }}>
+                          {activeChats
+                            .filter(c => chatsFilter === 'active' ? c.state !== 'IDLE' : c.state === 'IDLE')
+                            .map((chat) => {
+                              const isSelected = selectedChat?.phone === chat.phone;
+                              const isPaused = chat.state === 'PAUSED';
+                              const isIdle = chat.state === 'IDLE';
+                              const lastMsg = chat.messages && chat.messages.length > 0 ? chat.messages[chat.messages.length - 1] : null;
+
+                              return (
+                                <div
+                                  key={chat.phone}
+                                  onClick={() => {
+                                    setSelectedChat(chat);
+                                    setLocalChatMessages(chat.messages || []);
+                                  }}
+                                  style={{
+                                    padding: '12px 14px',
+                                    borderRadius: '10px',
+                                    background: isSelected ? 'rgba(212,175,55,0.12)' : 'rgba(255,255,255,0.02)',
+                                    border: isSelected ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.05)',
+                                    cursor: 'pointer',
+                                    transition: 'all 0.2s'
+                                  }}
+                                >
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                                    <span style={{ fontWeight: 'bold', fontSize: '14px', color: isSelected ? 'var(--primary)' : '#ffffff' }}>
+                                      {chat.name || chat.phone}
+                                    </span>
+                                    {isPaused ? (
+                                      <span style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '4px', background: 'rgba(239,68,68,0.15)', color: '#ef4444', fontWeight: 'bold' }}>
+                                        HUMANO
                                       </span>
-                                    </div>
-                                    <div style={{ display: 'flex', gap: '6px', marginTop: '2px' }}>
-                                      <button 
-                                        type="button" 
-                                        style={{ padding: '2px 6px', fontSize: '9px', borderRadius: '4px', background: 'rgba(255,255,255,0.05)', color: 'var(--primary)', border: '1px solid rgba(212,175,55,0.2)', cursor: 'pointer' }}
-                                        onClick={() => handleUpdateLicenseDays(session.establishment_id, 7)}
-                                      >
-                                        +7d
-                                      </button>
-                                      <button 
-                                        type="button" 
-                                        style={{ padding: '2px 6px', fontSize: '9px', borderRadius: '4px', background: 'rgba(255,255,255,0.05)', color: 'var(--primary)', border: '1px solid rgba(212,175,55,0.2)', cursor: 'pointer' }}
-                                        onClick={() => handleUpdateLicenseDays(session.establishment_id, 30)}
-                                      >
-                                        +30d
-                                      </button>
-                                      <button 
-                                        type="button" 
-                                        style={{ padding: '2px 6px', fontSize: '9px', borderRadius: '4px', background: 'rgba(239,68,68,0.05)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.2)', cursor: 'pointer' }}
-                                        onClick={() => handleExpireLicense(session.establishment_id)}
-                                      >
-                                        Expirar
-                                      </button>
-                                    </div>
+                                    ) : isIdle ? (
+                                      <span style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '4px', background: 'rgba(156,163,175,0.15)', color: '#9ca3af', fontWeight: 'bold' }}>
+                                        ENCERRADA
+                                      </span>
+                                    ) : null}
                                   </div>
-                                );
-                              })()}
+                                  <div style={{ fontSize: '12px', color: 'var(--muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                    {lastMsg ? lastMsg.text : 'Sem mensagens'}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Right Panel: Chat Thread & Reply Box */}
+                    <div className="card-premium dashboard-chats-main">
+                      {selectedChat ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+                          {/* Chat Header */}
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingBottom: '14px', borderBottom: '1px solid rgba(255,255,255,0.08)', marginBottom: '14px' }}>
+                            <div>
+                              <h4 style={{ fontSize: '16px', fontWeight: 'bold' }}>{selectedChat.name || selectedChat.phone}</h4>
+                              <span style={{ fontSize: '12px', color: 'var(--muted)' }}>WhatsApp: {selectedChat.phone}</span>
+                            </div>
+
+                            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                              {selectedChat.state === 'IDLE' ? (
+                                <>
+                                  <button 
+                                    className="btn-secondary"
+                                    style={{ padding: '6px 12px', fontSize: '12px', borderColor: '#3b82f6', color: '#3b82f6' }}
+                                    onClick={() => handlePauseChatBot(selectedChat.phone)}
+                                  >
+                                    Reassumir Conversa (Atender)
+                                  </button>
+                                  <button 
+                                    className="btn-primary"
+                                    style={{ padding: '6px 12px', fontSize: '12px' }}
+                                    onClick={() => handleResumeChatBot(selectedChat.phone)}
+                                  >
+                                    Reativar Bot Automático
+                                  </button>
+                                </>
+                              ) : (
+                                <>
+                                  {selectedChat.state === 'PAUSED' ? (
+                                    <button 
+                                      className="btn-secondary"
+                                      style={{ padding: '6px 12px', fontSize: '12px', borderColor: '#10b981', color: '#10b981' }}
+                                      onClick={() => handleResumeChatBot(selectedChat.phone)}
+                                    >
+                                      Retomar Bot
+                                    </button>
+                                  ) : (
+                                    <button 
+                                      className="btn-secondary"
+                                      style={{ padding: '6px 12px', fontSize: '12px', borderColor: '#eab308', color: '#eab308' }}
+                                      onClick={() => handlePauseChatBot(selectedChat.phone)}
+                                    >
+                                      Pausar Bot (Atender)
+                                    </button>
+                                  )}
+                                  <button 
+                                    className="btn-secondary"
+                                    style={{ padding: '6px 12px', fontSize: '12px', borderColor: '#ef4444', color: '#ef4444' }}
+                                    onClick={() => handleTerminateChatSession(selectedChat.phone)}
+                                  >
+                                    Encerrar Atendimento
+                                  </button>
+                                </>
+                              )}
                             </div>
                           </div>
-                          <div style={{ display: 'flex', gap: '8px' }}>
-                            {session.establishment_id !== '00000000-0000-0000-0000-000000000000' && (
-                              <>
-                                <button 
-                                  className="btn-secondary" 
-                                  style={{ 
-                                    padding: '6px 12px', 
-                                    fontSize: '12px', 
-                                    borderColor: session.is_active ? 'rgba(239,68,68,0.3)' : 'rgba(16,185,129,0.3)', 
-                                    color: session.is_active ? '#ef4444' : '#10b981' 
-                                  }} 
-                                  onClick={() => handleToggleEstablishmentStatus(session.establishment_id, session.is_active)}
-                                >
-                                  <span>{session.is_active ? 'Bloquear' : 'Desbloquear'}</span>
-                                </button>
 
-                                <button 
-                                  className="btn-secondary" 
-                                  style={{ 
-                                    padding: '6px 8px', 
-                                    fontSize: '12px', 
-                                    borderColor: 'rgba(239,68,68,0.3)', 
-                                    color: '#ef4444',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center'
-                                  }} 
-                                  onClick={() => handleDeleteEstablishment(session.establishment_id, session.establishment_name)}
-                                  title="Excluir barbearia permanentemente"
-                                >
-                                  <Trash2 size={14} />
-                                </button>
-                              </>
-                            )}
-                            
-                            {session.status === 'CONNECTED' ? (
-                              <button className="btn-secondary" style={{ padding: '6px 12px', fontSize: '12px', borderColor: '#ef4444', color: '#ef4444' }} onClick={() => handleSuperLogoutWhatsApp(session.establishment_id)}>
-                                <LogOut size={12} />
-                                <span>Desconectar</span>
-                              </button>
+                          {/* Chat History Thread */}
+                          <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '10px', paddingRight: '6px', marginBottom: '16px' }}>
+                            {localChatMessages.length === 0 ? (
+                              <div style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', color: 'var(--muted)', fontSize: '13px' }}>
+                                Nenhuma mensagem registrada neste chat.
+                              </div>
                             ) : (
-                              <button className="btn-primary" style={{ padding: '6px 12px', fontSize: '12px' }} onClick={() => handleOpenConnectModal(session.establishment_id, session.establishment_name)}>
-                                <MessageCircle size={12} />
-                                <span>Conectar</span>
-                              </button>
+                              localChatMessages.map((msg, idx) => (
+                                <div
+                                  key={idx}
+                                  style={{
+                                    alignSelf: msg.fromMe ? 'flex-end' : 'flex-start',
+                                    maxWidth: '80%',
+                                    padding: '10px 14px',
+                                    borderRadius: '12px',
+                                    background: msg.fromMe ? 'rgba(212,175,55,0.2)' : 'rgba(255,255,255,0.05)',
+                                    border: msg.fromMe ? '1px solid rgba(212,175,55,0.4)' : '1px solid rgba(255,255,255,0.08)',
+                                    color: '#ffffff',
+                                    fontSize: '14px',
+                                    lineHeight: '1.4'
+                                  }}
+                                >
+                                  <div>{msg.text}</div>
+                                  <div style={{ fontSize: '10px', color: 'var(--muted)', textAlign: 'right', marginTop: '4px' }}>
+                                    {msg.time || ''}
+                                  </div>
+                                </div>
+                              ))
                             )}
                           </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
 
-                {/* Usuários do Sistema */}
-                <div className="card-premium">
-                  <h3 style={{ fontSize: '18px', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <Users size={18} style={{ color: 'var(--primary)' }} />
-                    Usuários do Sistema
-                  </h3>
-                  
-                  {/* Busca */}
-                  <div className="form-group" style={{ marginBottom: '16px' }}>
-                    <div style={{ display: 'flex', gap: '8px' }}>
-                      <input 
-                        type="text" 
-                        className="form-input" 
-                        placeholder="Buscar por nome, email ou salão..." 
-                        value={superSearchUser} 
-                        onChange={(e) => setSuperSearchUser(e.target.value)} 
-                      />
+                          {/* Reply Box Input */}
+                          <form 
+                            onSubmit={(e) => {
+                              e.preventDefault();
+                              handleSendManualChatMessage();
+                            }}
+                            style={{ display: 'flex', gap: '10px' }}
+                          >
+                            <input
+                              type="text"
+                              className="form-input"
+                              placeholder="Digite sua resposta como Super Admin..."
+                              value={manualMessageInput}
+                              onChange={(e) => setManualMessageInput(e.target.value)}
+                              style={{ flex: 1 }}
+                            />
+                            <button className="btn-primary" type="submit" style={{ padding: '0 20px' }}>
+                              <span>Enviar</span>
+                            </button>
+                          </form>
+                        </div>
+                      ) : (
+                        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', color: 'var(--muted)', gap: '12px', padding: '40px' }}>
+                          <MessageCircle size={40} style={{ opacity: 0.3 }} />
+                          <p style={{ fontSize: '14px' }}>Selecione uma conversa ao lado para visualizar e responder no WhatsApp Central (553498032768).</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ------------------------------------------------------------- */}
+              {/* SUB-TAB 1: VISÃO GERAL & KPIS */}
+              {/* ------------------------------------------------------------- */}
+              {adminSubTab === 'overview' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }} className="animate-fade-in">
+                  {/* KPI Cards Grid */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '16px' }}>
+                    
+                    {/* Card 1: Barbearias */}
+                    <div className="card-premium" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontSize: '13px', color: 'var(--muted)', fontWeight: 'bold' }}>Barbearias Cadastradas</span>
+                        <div style={{ width: '36px', height: '36px', borderRadius: '10px', background: 'rgba(212,175,55,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--primary)' }}>
+                          <Scissors size={20} />
+                        </div>
+                      </div>
+                      <div style={{ fontSize: '32px', fontWeight: 'bold', lineHeight: '1' }}>{superSessions.length}</div>
+                      <div style={{ display: 'flex', gap: '10px', fontSize: '12px' }}>
+                        <span style={{ color: '#10b981', fontWeight: 'bold' }}>
+                          ● {superSessions.filter(s => s.is_active !== false).length} Ativas
+                        </span>
+                        <span style={{ color: '#ef4444', fontWeight: 'bold' }}>
+                          ● {superSessions.filter(s => s.is_active === false).length} Bloqueadas
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Card 2: Sessões WhatsApp Conectadas */}
+                    <div className="card-premium" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontSize: '13px', color: 'var(--muted)', fontWeight: 'bold' }}>Conexões WhatsApp</span>
+                        <div style={{ width: '36px', height: '36px', borderRadius: '10px', background: 'rgba(16,185,129,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#10b981' }}>
+                          <MessageCircle size={20} />
+                        </div>
+                      </div>
+                      <div style={{ fontSize: '32px', fontWeight: 'bold', lineHeight: '1', color: '#10b981' }}>
+                        {superSessions.filter(s => s.status === 'CONNECTED').length} <span style={{ fontSize: '18px', color: 'var(--muted)' }}>/ {superSessions.length}</span>
+                      </div>
+                      <div style={{ width: '100%', height: '6px', borderRadius: '3px', background: 'rgba(255,255,255,0.05)', overflow: 'hidden' }}>
+                        <div style={{ 
+                          height: '100%', 
+                          width: `${superSessions.length > 0 ? (superSessions.filter(s => s.status === 'CONNECTED').length / superSessions.length) * 100 : 0}%`, 
+                          background: 'linear-gradient(90deg, #10b981, #34d399)', 
+                          borderRadius: '3px' 
+                        }} />
+                      </div>
+                    </div>
+
+                    {/* Card 3: Usuários Cadastrados */}
+                    <div className="card-premium" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontSize: '13px', color: 'var(--muted)', fontWeight: 'bold' }}>Usuários Globais</span>
+                        <div style={{ width: '36px', height: '36px', borderRadius: '10px', background: 'rgba(59,130,246,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#3b82f6' }}>
+                          <Users size={20} />
+                        </div>
+                      </div>
+                      <div style={{ fontSize: '32px', fontWeight: 'bold', lineHeight: '1' }}>{superUsers.length}</div>
+                      <div style={{ display: 'flex', gap: '10px', fontSize: '12px', color: 'var(--muted)' }}>
+                        <span>👑 Donos: {superUsers.filter(u => u.role === 'owner').length}</span>
+                        <span>💈 Barbeiros: {superUsers.filter(u => u.role === 'barber').length}</span>
+                      </div>
+                    </div>
+
+                    {/* Card 4: Infraestrutura & Broker */}
+                    <div className="card-premium" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontSize: '13px', color: 'var(--muted)', fontWeight: 'bold' }}>Status do Cluster</span>
+                        <div style={{ width: '36px', height: '36px', borderRadius: '10px', background: 'rgba(168,85,247,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#a855f7' }}>
+                          <Shield size={20} />
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '13px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#10b981' }} />
+                          <span>PostgreSQL DB: <strong>Online</strong></span>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#10b981' }} />
+                          <span>Redis Broker: <strong>Online</strong></span>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#10b981' }} />
+                          <span>WhatsApp Gateway: <strong>Multi-Tenant</strong></span>
+                        </div>
+                      </div>
                     </div>
                   </div>
 
-                  {loadingSuper ? (
-                    <p style={{ color: 'var(--muted)' }}>Carregando usuários...</p>
-                  ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', maxHeight: '400px', overflowY: 'auto', paddingRight: '4px' }}>
-                      {superUsers
-                        .filter(u => {
-                          const query = superSearchUser.toLowerCase();
-                          return u.name.toLowerCase().includes(query) || 
-                                 u.email.toLowerCase().includes(query) || 
-                                 (u.establishment_name && u.establishment_name.toLowerCase().includes(query));
-                        })
-                        .map((u) => (
-                          <div key={u.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px', background: 'rgba(255,255,255,0.02)', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)' }}>
-                            <div>
-                              <div style={{ fontSize: '14px', fontWeight: 'bold' }}>{u.name}</div>
-                              <div style={{ fontSize: '12px', color: 'var(--muted)', wordBreak: 'break-all' }}>{u.email}</div>
-                              <div style={{ display: 'flex', gap: '6px', marginTop: '4px', flexWrap: 'wrap' }}>
-                                <span style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '4px', background: 'rgba(212,175,55,0.1)', color: 'var(--primary)', fontWeight: 'bold' }}>
-                                  {u.role === 'admin' ? 'Super Admin' : u.role === 'owner' ? 'Dono' : 'Barbeiro'}
-                                </span>
-                                {u.establishment_name && (
-                                  <span style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '4px', background: 'rgba(255,255,255,0.05)', color: 'var(--foreground)' }}>
-                                    {u.establishment_name}
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                            <button 
-                              className="btn-secondary" 
-                              style={{ padding: '6px 10px', fontSize: '12px' }} 
-                              onClick={() => {
-                                setSuperSelectedUser(u);
-                                setSuperNewPassword('');
-                                setSuperChangePasswordModal(true);
-                              }}
-                            >
-                              <Key size={12} />
-                              <span>Senha</span>
-                            </button>
-                          </div>
-                        ))}
+                  {/* Quick Action Shortcuts */}
+                  <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                    <button 
+                      className="btn-primary"
+                      onClick={() => setAdminSubTab('establishments')}
+                      style={{ padding: '12px 20px', borderRadius: '12px' }}
+                    >
+                      <Plus size={18} />
+                      Nova Barbearia
+                    </button>
+                    <button 
+                      className="btn-secondary"
+                      onClick={() => setAdminSubTab('establishments')}
+                      style={{ padding: '12px 20px', borderRadius: '12px' }}
+                    >
+                      <MessageSquare size={18} />
+                      Gerenciar Sessões WhatsApp
+                    </button>
+                    <button 
+                      className="btn-secondary"
+                      onClick={() => setAdminSubTab('users')}
+                      style={{ padding: '12px 20px', borderRadius: '12px' }}
+                    >
+                      <Users size={18} />
+                      Agenda de Contatos
+                    </button>
+                  </div>
+
+                  {/* Suggestions Area */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px' }}>
+                    <div className="card-premium" style={{ borderLeft: '4px solid var(--primary)', padding: '18px' }}>
+                      <h4 style={{ color: 'var(--primary)', fontSize: '15px', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <TrendingUp size={16} />
+                        Incentivo de Receita
+                      </h4>
+                      <p style={{ fontSize: '13px', color: 'var(--muted)', lineHeight: '1.5' }}>
+                        Sugerimos orientar as barbearias parceiras com baixo faturamento a criarem pacotes de serviços no <strong>Clube de Assinaturas</strong>, maximizando a previsibilidade financeira mensal.
+                      </p>
                     </div>
-                  )}
+
+                    <div className="card-premium" style={{ borderLeft: '4px solid #ef4444', padding: '18px' }}>
+                      <h4 style={{ color: '#ef4444', fontSize: '15px', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <MessageSquare size={16} />
+                        Sessões Desconectadas
+                      </h4>
+                      <p style={{ fontSize: '13px', color: 'var(--muted)', lineHeight: '1.5' }}>
+                        Conexões desconectadas demandam novo escaneamento de QR Code pelo dono da barbearia. O SessionManager do Gateway reconecta sessões salvas automaticamente.
+                      </p>
+                    </div>
+
+                    <div className="card-premium" style={{ borderLeft: '4px solid #3b82f6', padding: '18px' }}>
+                      <h4 style={{ color: '#3b82f6', fontSize: '15px', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <Shield size={16} />
+                        Segurança do Sistema
+                      </h4>
+                      <p style={{ fontSize: '13px', color: 'var(--muted)', lineHeight: '1.5' }}>
+                        Como Super Administrador, você possui permissão para alterar senhas de qualquer dono ou barbeiro na aba <strong>Usuários & Contatos</strong>.
+                      </p>
+                    </div>
+                  </div>
                 </div>
-              </div>
+              )}
 
-              {/* Configuração de Comissões das Barbearias */}
-              <div className="card-premium" style={{ marginTop: '8px' }}>
-                <h3 style={{ fontSize: '18px', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <TrendingUp size={18} style={{ color: 'var(--primary)' }} />
-                  Comissões de Barbearias Parceiras
-                </h3>
-                <p style={{ color: 'var(--muted)', fontSize: '13px', marginBottom: '20px' }}>
-                  Defina a comissão padrão retida/paga por cada barbearia para o cálculo de divisão de lucros dos profissionais.
-                </p>
+              {/* ------------------------------------------------------------- */}
+              {/* SUB-TAB 2: BARBEARIAS & LICENÇAS */}
+              {/* ------------------------------------------------------------- */}
+              {adminSubTab === 'establishments' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }} className="animate-fade-in">
+                  
+                  {/* Cadastrar Nova Barbearia */}
+                  <div className="card-premium" style={{ padding: '24px' }}>
+                    <h3 style={{ fontSize: '18px', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <Plus size={20} style={{ color: 'var(--primary)' }} />
+                      Cadastrar Nova Barbearia & Proprietário
+                    </h3>
+                    <p style={{ color: 'var(--muted)', fontSize: '13px', marginBottom: '20px' }}>
+                      Crie um novo estabelecimento no sistema. O proprietário receberá o login e senha inicial para configurar serviços e barbeiros.
+                    </p>
 
-                <div style={{ overflowX: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: '500px' }}>
-                    <thead>
-                      <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-                        <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase' }}>Barbearia</th>
-                        <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase', textAlign: 'center' }}>Comissão Atual</th>
-                        <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase', textAlign: 'right' }}>Ações</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {superSessions.map((session) => {
-                        const isEditing = superEditingEstId === session.establishment_id;
-                        return (
-                          <tr key={session.establishment_id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                            <td style={{ padding: '12px 8px', fontSize: '14px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <form onSubmit={handleCreateEstablishment} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
+                      <div className="form-group" style={{ marginBottom: 0 }}>
+                        <label className="form-label">Nome da Barbearia</label>
+                        <input 
+                          type="text" 
+                          className="form-input" 
+                          placeholder="Ex: Barbearia do Gabriel"
+                          value={superNewEstName}
+                          onChange={(e) => {
+                            setSuperNewEstName(e.target.value);
+                            setSuperNewEstSlug(e.target.value.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, ''));
+                          }}
+                          required
+                        />
+                      </div>
+
+                      <div className="form-group" style={{ marginBottom: 0 }}>
+                        <label className="form-label">Slug de URL (Link Público)</label>
+                        <input 
+                          type="text" 
+                          className="form-input" 
+                          placeholder="Ex: barbearia-gabriel"
+                          value={superNewEstSlug}
+                          onChange={(e) => setSuperNewEstSlug(e.target.value.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, ''))}
+                          required
+                        />
+                      </div>
+
+                      <div className="form-group" style={{ marginBottom: 0 }}>
+                        <label className="form-label">Nome do Proprietário</label>
+                        <input 
+                          type="text" 
+                          className="form-input" 
+                          placeholder="Ex: Gabriel Silva"
+                          value={superNewOwnerName}
+                          onChange={(e) => setSuperNewOwnerName(e.target.value)}
+                          required
+                        />
+                      </div>
+
+                      <div className="form-group" style={{ marginBottom: 0 }}>
+                        <label className="form-label">E-mail do Proprietário</label>
+                        <input 
+                          type="email" 
+                          className="form-input" 
+                          placeholder="Ex: gabriel@email.com"
+                          value={superNewOwnerEmail}
+                          onChange={(e) => setSuperNewOwnerEmail(e.target.value)}
+                          required
+                        />
+                      </div>
+
+                      <div className="form-group" style={{ marginBottom: 0 }}>
+                        <label className="form-label">WhatsApp do Proprietário</label>
+                        <input 
+                          type="text" 
+                          className="form-input" 
+                          placeholder="Ex: 34995880392"
+                          value={superNewOwnerPhone}
+                          onChange={(e) => setSuperNewOwnerPhone(e.target.value)}
+                          required
+                        />
+                      </div>
+
+                      <div style={{ gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
+                        {superCreateEstError && (
+                          <div style={{ color: '#ef4444', fontSize: '13px' }}>⚠️ {superCreateEstError}</div>
+                        )}
+                        {superCreateEstSuccess && (
+                          <div style={{ color: '#10b981', fontSize: '13px' }}>✅ {superCreateEstSuccess}</div>
+                        )}
+                        
+                        <button 
+                          type="submit" 
+                          className="btn-primary" 
+                          style={{ alignSelf: 'flex-end', minWidth: '180px' }}
+                          disabled={superCreateEstLoading}
+                        >
+                          {superCreateEstLoading ? 'Cadastrando...' : 'Cadastrar Barbearia'}
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+
+                  {/* Sessões WhatsApp & Gestão de Barbearias */}
+                  <div className="card-premium">
+                    <h3 style={{ fontSize: '18px', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <MessageSquare size={18} style={{ color: 'var(--primary)' }} />
+                      Barbearias & Sessões WhatsApp ({superSessions.length})
+                    </h3>
+
+                    {loadingSuper ? (
+                      <p style={{ color: 'var(--muted)' }}>Carregando estabelecimentos...</p>
+                    ) : superSessions.length === 0 ? (
+                      <p style={{ color: 'var(--muted)' }}>Nenhum estabelecimento cadastrado.</p>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                        {superSessions.map((session) => (
+                          <div key={session.establishment_id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '16px', padding: '16px', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
                               {session.logo_url ? (
-                                <img src={session.logo_url} style={{ width: '28px', height: '28px', borderRadius: '50%', objectFit: 'cover' }} />
+                                <img src={session.logo_url} style={{ width: '42px', height: '42px', borderRadius: '50%', objectFit: 'cover' }} />
                               ) : (
-                                <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'var(--primary)', display: 'flex', justifyContent: 'center', alignItems: 'center', fontSize: '11px', fontWeight: 'bold', color: '#121212' }}>
+                                <div style={{ width: '42px', height: '42px', borderRadius: '50%', background: 'linear-gradient(135deg, var(--primary), #aa820a)', display: 'flex', justifyContent: 'center', alignItems: 'center', color: '#121212', fontWeight: 'bold', fontSize: '16px' }}>
                                   {session.establishment_name[0]}
                                 </div>
                               )}
-                              <span>{session.establishment_name}</span>
-                            </td>
-                            <td style={{ padding: '12px 8px', fontSize: '14px', textAlign: 'center', fontWeight: 'bold', color: 'var(--primary)' }}>
-                              {isEditing ? (
-                                <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '6px' }}>
-                                  <input 
-                                    type="number" 
-                                    className="form-input" 
-                                    style={{ width: '80px', padding: '4px 8px', textAlign: 'center' }} 
-                                    min="0" 
-                                    max="100"
-                                    value={superNewCommission} 
-                                    onChange={(e) => setSuperNewCommission(e.target.value)} 
-                                  />
-                                  <span>%</span>
+                              <div>
+                                <div style={{ fontSize: '15px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                  {session.establishment_name}
+                                  {session.establishment_id !== '00000000-0000-0000-0000-000000000000' && (
+                                    <span style={{ 
+                                      fontSize: '10px', 
+                                      padding: '2px 8px', 
+                                      borderRadius: '4px', 
+                                      background: session.is_active ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)', 
+                                      color: session.is_active ? '#10b981' : '#ef4444',
+                                      border: `1px solid ${session.is_active ? 'rgba(16,185,129,0.2)' : 'rgba(239,68,68,0.2)'}`,
+                                      fontWeight: 'bold'
+                                    }}>
+                                      {session.is_active ? 'Ativo' : 'Bloqueado'}
+                                    </span>
+                                  )}
                                 </div>
-                              ) : (
-                                `${session.commission_percent !== undefined ? session.commission_percent : 50}%`
-                              )}
-                            </td>
-                            <td style={{ padding: '12px 8px', fontSize: '14px', textAlign: 'right' }}>
-                              {isEditing ? (
-                                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
-                                  <button 
-                                    className="btn-primary" 
-                                    style={{ padding: '4px 10px', fontSize: '12px' }} 
-                                    onClick={() => handleSuperSaveCommission(session.establishment_id, parseInt(superNewCommission, 10))}
-                                  >
-                                    Salvar
-                                  </button>
+
+                                <div style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px' }}>
+                                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: session.status === 'CONNECTED' ? '#10b981' : '#ef4444', display: 'inline-block' }} />
+                                  <span style={{ color: session.status === 'CONNECTED' ? '#10b981' : 'var(--muted)' }}>
+                                    {session.status === 'CONNECTED' ? `Conectado (${session.phone || 'Sem número'})` : 'Desconectado'}
+                                  </span>
+                                </div>
+
+                                {session.establishment_id !== '00000000-0000-0000-0000-000000000000' && session.expires_at && (() => {
+                                  const expiresAt = new Date(session.expires_at);
+                                  const isExpired = expiresAt < new Date();
+                                  const diffTime = expiresAt.getTime() - new Date().getTime();
+                                  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                                  
+                                  return (
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '6px', flexWrap: 'wrap' }}>
+                                      <span style={{ fontSize: '11px', color: isExpired ? '#ef4444' : 'rgba(255,255,255,0.6)' }}>
+                                        {isExpired ? `🔴 Licença Expirada (${expiresAt.toLocaleDateString('pt-BR')})` : `🟢 Licença: ${diffDays} dias (${expiresAt.toLocaleDateString('pt-BR')})`}
+                                      </span>
+                                      <div style={{ display: 'flex', gap: '4px' }}>
+                                        <button 
+                                          type="button" 
+                                          style={{ padding: '2px 8px', fontSize: '10px', borderRadius: '4px', background: 'rgba(255,255,255,0.05)', color: 'var(--primary)', border: '1px solid rgba(212,175,55,0.2)', cursor: 'pointer' }}
+                                          onClick={() => handleUpdateLicenseDays(session.establishment_id, 7)}
+                                        >
+                                          +7 Dias
+                                        </button>
+                                        <button 
+                                          type="button" 
+                                          style={{ padding: '2px 8px', fontSize: '10px', borderRadius: '4px', background: 'rgba(255,255,255,0.05)', color: 'var(--primary)', border: '1px solid rgba(212,175,55,0.2)', cursor: 'pointer' }}
+                                          onClick={() => handleUpdateLicenseDays(session.establishment_id, 30)}
+                                        >
+                                          +30 Dias
+                                        </button>
+                                        <button 
+                                          type="button" 
+                                          style={{ padding: '2px 8px', fontSize: '10px', borderRadius: '4px', background: 'rgba(239,68,68,0.08)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.2)', cursor: 'pointer' }}
+                                          onClick={() => handleExpireLicense(session.establishment_id)}
+                                        >
+                                          Expirar
+                                        </button>
+                                      </div>
+                                    </div>
+                                  );
+                                })()}
+                              </div>
+                            </div>
+
+                            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                              {session.establishment_id !== '00000000-0000-0000-0000-000000000000' && (
+                                <>
                                   <button 
                                     className="btn-secondary" 
-                                    style={{ padding: '4px 10px', fontSize: '12px' }} 
-                                    onClick={() => {
-                                      setSuperEditingEstId(null);
-                                      setSuperNewCommission('');
-                                    }}
+                                    style={{ 
+                                      padding: '6px 12px', 
+                                      fontSize: '12px', 
+                                      borderColor: session.is_active ? 'rgba(239,68,68,0.3)' : 'rgba(16,185,129,0.3)', 
+                                      color: session.is_active ? '#ef4444' : '#10b981' 
+                                    }} 
+                                    onClick={() => handleToggleEstablishmentStatus(session.establishment_id, session.is_active)}
                                   >
-                                    Cancelar
+                                    <span>{session.is_active ? 'Bloquear' : 'Desbloquear'}</span>
                                   </button>
-                                </div>
+
+                                  <button 
+                                    className="btn-secondary" 
+                                    style={{ 
+                                      padding: '6px 10px', 
+                                      fontSize: '12px', 
+                                      borderColor: 'rgba(239,68,68,0.3)', 
+                                      color: '#ef4444'
+                                    }} 
+                                    onClick={() => handleDeleteEstablishment(session.establishment_id, session.establishment_name)}
+                                    title="Excluir barbearia permanentemente"
+                                  >
+                                    <Trash2 size={14} />
+                                  </button>
+                                </>
+                              )}
+                              
+                              {session.status === 'CONNECTED' ? (
+                                <button className="btn-secondary" style={{ padding: '6px 12px', fontSize: '12px', borderColor: '#ef4444', color: '#ef4444' }} onClick={() => handleSuperLogoutWhatsApp(session.establishment_id)}>
+                                  <LogOut size={12} />
+                                  <span>Desconectar</span>
+                                </button>
                               ) : (
-                                <button 
-                                  className="btn-secondary" 
-                                  style={{ padding: '6px 12px', fontSize: '12px' }} 
-                                  onClick={() => {
-                                    setSuperEditingEstId(session.establishment_id);
-                                    setSuperNewCommission(String(session.commission_percent !== undefined ? session.commission_percent : 50));
-                                  }}
-                                >
-                                  Configurar Taxa
+                                <button className="btn-primary" style={{ padding: '6px 12px', fontSize: '12px' }} onClick={() => handleOpenConnectModal(session.establishment_id, session.establishment_name)}>
+                                  <MessageCircle size={12} />
+                                  <span>Conectar QR Code</span>
                                 </button>
                               )}
-                            </td>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Configuração de Comissões */}
+                  <div className="card-premium">
+                    <h3 style={{ fontSize: '18px', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <TrendingUp size={18} style={{ color: 'var(--primary)' }} />
+                      Taxas de Comissão Retidas por Barbearia
+                    </h3>
+                    <p style={{ color: 'var(--muted)', fontSize: '13px', marginBottom: '16px' }}>
+                      Ajuste a porcentagem de comissão retida pelo estabelecimento sobre os agendamentos realizados.
+                    </p>
+
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: '500px' }}>
+                        <thead>
+                          <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                            <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase' }}>Barbearia</th>
+                            <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase', textAlign: 'center' }}>Taxa de Comissão</th>
+                            <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase', textAlign: 'right' }}>Ação</th>
                           </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                        </thead>
+                        <tbody>
+                          {superSessions.map((session) => {
+                            const isEditing = superEditingEstId === session.establishment_id;
+                            return (
+                              <tr key={session.establishment_id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                                <td style={{ padding: '12px 8px', fontSize: '14px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                  {session.logo_url ? (
+                                    <img src={session.logo_url} style={{ width: '28px', height: '28px', borderRadius: '50%', objectFit: 'cover' }} />
+                                  ) : (
+                                    <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'var(--primary)', display: 'flex', justifyContent: 'center', alignItems: 'center', fontSize: '11px', fontWeight: 'bold', color: '#121212' }}>
+                                      {session.establishment_name[0]}
+                                    </div>
+                                  )}
+                                  <span>{session.establishment_name}</span>
+                                </td>
+                                <td style={{ padding: '12px 8px', fontSize: '14px', textAlign: 'center', fontWeight: 'bold', color: 'var(--primary)' }}>
+                                  {isEditing ? (
+                                    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '6px' }}>
+                                      <input 
+                                        type="number" 
+                                        className="form-input" 
+                                        style={{ width: '80px', padding: '4px 8px', textAlign: 'center' }} 
+                                        min="0" 
+                                        max="100"
+                                        value={superNewCommission} 
+                                        onChange={(e) => setSuperNewCommission(e.target.value)} 
+                                      />
+                                      <span>%</span>
+                                    </div>
+                                  ) : (
+                                    `${session.commission_percent !== undefined ? session.commission_percent : 50}%`
+                                  )}
+                                </td>
+                                <td style={{ padding: '12px 8px', fontSize: '14px', textAlign: 'right' }}>
+                                  {isEditing ? (
+                                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                                      <button 
+                                        className="btn-primary" 
+                                        style={{ padding: '4px 10px', fontSize: '12px' }} 
+                                        onClick={() => handleSuperSaveCommission(session.establishment_id, parseInt(superNewCommission, 10))}
+                                      >
+                                        Salvar
+                                      </button>
+                                      <button 
+                                        className="btn-secondary" 
+                                        style={{ padding: '4px 10px', fontSize: '12px' }} 
+                                        onClick={() => {
+                                          setSuperEditingEstId(null);
+                                          setSuperNewCommission('');
+                                        }}
+                                      >
+                                        Cancelar
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <button 
+                                      className="btn-secondary" 
+                                      style={{ padding: '6px 12px', fontSize: '12px' }} 
+                                      onClick={() => {
+                                        setSuperEditingEstId(session.establishment_id);
+                                        setSuperNewCommission(String(session.commission_percent !== undefined ? session.commission_percent : 50));
+                                      }}
+                                    >
+                                      Editar Taxa
+                                    </button>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
                 </div>
-              </div>
+              )}
 
-              {/* Agenda de Contatos e Chat de Suporte */}
-              <div className="card-premium" style={{ marginTop: '24px' }}>
-                <h3 style={{ fontSize: '18px', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <Users size={18} style={{ color: 'var(--primary)' }} />
-                  Agenda de Contatos dos Parceiros (WhatsApp)
-                </h3>
-                <p style={{ color: 'var(--muted)', fontSize: '13px', marginBottom: '20px' }}>
-                  Visualize os contatos de todos os donos e barbeiros cadastrados na plataforma BarberHub e envie mensagens rápidas de suporte via o WhatsApp central da plataforma.
-                </p>
+              {/* ------------------------------------------------------------- */}
+              {/* SUB-TAB 3: USUÁRIOS & CONTATOS */}
+              {/* ------------------------------------------------------------- */}
+              {adminSubTab === 'users' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }} className="animate-fade-in">
+                  
+                  {/* Busca e Lista de Usuários */}
+                  <div className="card-premium">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
+                      <h3 style={{ fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <Users size={18} style={{ color: 'var(--primary)' }} />
+                        Usuários Cadastrados ({superUsers.length})
+                      </h3>
 
-                <div style={{ overflowX: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: '700px' }}>
-                    <thead>
-                      <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-                        <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase' }}>Nome</th>
-                        <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase' }}>Email</th>
-                        <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase' }}>Telefone</th>
-                        <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase' }}>Cargo</th>
-                        <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase' }}>Barbearia</th>
-                        <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase', textAlign: 'right' }}>Ações</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {superUsers
-                        .filter(u => u.role !== 'admin' && u.phone) // Mostra apenas parceiros que têm telefone cadastrado
-                        .map((u) => (
-                          <tr key={u.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                            <td style={{ padding: '12px 8px', fontSize: '14px', fontWeight: 'bold' }}>{u.name}</td>
-                            <td style={{ padding: '12px 8px', fontSize: '13px', color: 'var(--muted)' }}>{u.email}</td>
-                            <td style={{ padding: '12px 8px', fontSize: '13px' }}>{u.phone}</td>
-                            <td style={{ padding: '12px 8px', fontSize: '13px' }}>
-                              <span style={{ 
-                                fontSize: '10px', 
-                                padding: '2px 6px', 
-                                borderRadius: '4px', 
-                                background: u.role === 'owner' ? 'rgba(212,175,55,0.1)' : 'rgba(255,255,255,0.05)', 
-                                color: u.role === 'owner' ? 'var(--primary)' : 'var(--foreground)',
-                                fontWeight: 'bold'
-                              }}>
-                                {u.role === 'owner' ? 'Dono' : 'Barbeiro'}
-                              </span>
-                            </td>
-                            <td style={{ padding: '12px 8px', fontSize: '13px', color: 'var(--muted)' }}>{u.establishment_name || '-'}</td>
-                            <td style={{ padding: '12px 8px', fontSize: '14px', textAlign: 'right' }}>
+                      <div style={{ position: 'relative', width: '280px' }}>
+                        <Search size={16} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--muted)' }} />
+                        <input 
+                          type="text" 
+                          className="form-input" 
+                          style={{ paddingLeft: '36px', height: '38px', fontSize: '13px' }}
+                          placeholder="Buscar usuário ou salão..." 
+                          value={superSearchUser} 
+                          onChange={(e) => setSuperSearchUser(e.target.value)} 
+                        />
+                      </div>
+                    </div>
+
+                    {loadingSuper ? (
+                      <p style={{ color: 'var(--muted)' }}>Carregando usuários...</p>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '420px', overflowY: 'auto' }}>
+                        {superUsers
+                          .filter(u => {
+                            const query = superSearchUser.toLowerCase();
+                            return u.name.toLowerCase().includes(query) || 
+                                   u.email.toLowerCase().includes(query) || 
+                                   (u.establishment_name && u.establishment_name.toLowerCase().includes(query));
+                          })
+                          .map((u) => (
+                            <div key={u.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', background: 'rgba(255,255,255,0.02)', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                              <div>
+                                <div style={{ fontSize: '15px', fontWeight: 'bold' }}>{u.name}</div>
+                                <div style={{ fontSize: '13px', color: 'var(--muted)' }}>{u.email} {u.phone ? `• ${u.phone}` : ''}</div>
+                                <div style={{ display: 'flex', gap: '6px', marginTop: '6px' }}>
+                                  <span style={{ fontSize: '10px', padding: '2px 8px', borderRadius: '4px', background: u.role === 'admin' ? 'rgba(168,85,247,0.1)' : u.role === 'owner' ? 'rgba(212,175,55,0.1)' : 'rgba(255,255,255,0.05)', color: u.role === 'admin' ? '#a855f7' : u.role === 'owner' ? 'var(--primary)' : 'var(--foreground)', fontWeight: 'bold' }}>
+                                    {u.role === 'admin' ? 'Super Admin' : u.role === 'owner' ? 'Proprietário' : 'Barbeiro'}
+                                  </span>
+                                  {u.establishment_name && (
+                                    <span style={{ fontSize: '10px', padding: '2px 8px', borderRadius: '4px', background: 'rgba(255,255,255,0.05)', color: 'var(--foreground)' }}>
+                                      {u.establishment_name}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
                               <button 
-                                className="btn-primary" 
-                                style={{ padding: '6px 12px', fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                                className="btn-secondary" 
+                                style={{ padding: '6px 12px', fontSize: '12px' }} 
                                 onClick={() => {
-                                  setSuperChatContact(u);
-                                  setSuperChatMessage('');
-                                  setSuperChatOpen(true);
+                                  setSuperSelectedUser(u);
+                                  setSuperNewPassword('');
+                                  setSuperChangePasswordModal(true);
                                 }}
                               >
-                                <MessageCircle size={12} />
-                                <span>Conversar</span>
+                                <Key size={14} />
+                                <span>Alterar Senha</span>
                               </button>
-                            </td>
+                            </div>
+                          ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Agenda de Contatos dos Parceiros */}
+                  <div className="card-premium">
+                    <h3 style={{ fontSize: '18px', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <MessageCircle size={18} style={{ color: 'var(--primary)' }} />
+                      Suporte via WhatsApp aos Parceiros
+                    </h3>
+                    <p style={{ color: 'var(--muted)', fontSize: '13px', marginBottom: '16px' }}>
+                      Envie mensagens diretas de notificação e suporte para proprietários e barbeiros via o WhatsApp central da plataforma.
+                    </p>
+
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: '650px' }}>
+                        <thead>
+                          <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                            <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase' }}>Nome</th>
+                            <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase' }}>Telefone</th>
+                            <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase' }}>Cargo</th>
+                            <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase' }}>Barbearia</th>
+                            <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase', textAlign: 'right' }}>Ação</th>
                           </tr>
-                        ))}
-                    </tbody>
-                  </table>
+                        </thead>
+                        <tbody>
+                          {superUsers
+                            .filter(u => u.role !== 'admin' && u.phone)
+                            .map((u) => (
+                              <tr key={u.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                                <td style={{ padding: '12px 8px', fontSize: '14px', fontWeight: 'bold' }}>{u.name}</td>
+                                <td style={{ padding: '12px 8px', fontSize: '13px' }}>{u.phone}</td>
+                                <td style={{ padding: '12px 8px', fontSize: '13px' }}>
+                                  <span style={{ fontSize: '10px', padding: '2px 8px', borderRadius: '4px', background: u.role === 'owner' ? 'rgba(212,175,55,0.1)' : 'rgba(255,255,255,0.05)', color: u.role === 'owner' ? 'var(--primary)' : 'var(--foreground)', fontWeight: 'bold' }}>
+                                    {u.role === 'owner' ? 'Proprietário' : 'Barbeiro'}
+                                  </span>
+                                </td>
+                                <td style={{ padding: '12px 8px', fontSize: '13px', color: 'var(--muted)' }}>{u.establishment_name || '-'}</td>
+                                <td style={{ padding: '12px 8px', fontSize: '14px', textAlign: 'right' }}>
+                                  <button 
+                                    className="btn-primary" 
+                                    style={{ padding: '6px 12px', fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                                    onClick={() => {
+                                      setSuperChatContact(u);
+                                      setSuperChatMessage('');
+                                      setSuperChatOpen(true);
+                                    }}
+                                  >
+                                    <MessageCircle size={14} />
+                                    <span>Conversar</span>
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
                 </div>
-              </div>
+              )}
+
+              {/* ------------------------------------------------------------- */}
+              {/* SUB-TAB: FINANCEIRO & MRR */}
+              {/* ------------------------------------------------------------- */}
+              {adminSubTab === 'financial' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }} className="animate-fade-in">
+                  
+                  {/* KPI Cards Financeiros SaaS */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '16px' }}>
+                    <div className="card-premium" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                      <div style={{ fontSize: '13px', color: 'var(--muted)', fontWeight: 'bold' }}>Faturamento Mensal Recorrente (MRR)</div>
+                      <div style={{ fontSize: '32px', fontWeight: 'bold', color: '#10b981' }}>
+                        R$ {(superSessions.filter(s => s.is_active !== false).length * 199).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                      </div>
+                      <div style={{ fontSize: '12px', color: 'var(--muted)' }}>
+                        Com base em {superSessions.filter(s => s.is_active !== false).length} barbearias no Plano Pro (R$ 199/mês)
+                      </div>
+                    </div>
+
+                    <div className="card-premium" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                      <div style={{ fontSize: '13px', color: 'var(--muted)', fontWeight: 'bold' }}>Faturamento Anual Projetado (ARR)</div>
+                      <div style={{ fontSize: '32px', fontWeight: 'bold', color: 'var(--primary)' }}>
+                        R$ {(superSessions.filter(s => s.is_active !== false).length * 199 * 12).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                      </div>
+                      <div style={{ fontSize: '12px', color: 'var(--muted)' }}>
+                        Projeção anual de receita da plataforma SaaS
+                      </div>
+                    </div>
+
+                    <div className="card-premium" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                      <div style={{ fontSize: '13px', color: 'var(--muted)', fontWeight: 'bold' }}>Ticket Médio por Barbearia (ARPU)</div>
+                      <div style={{ fontSize: '32px', fontWeight: 'bold', color: '#3b82f6' }}>
+                        R$ 199,00
+                      </div>
+                      <div style={{ fontSize: '12px', color: '#10b981', fontWeight: 'bold' }}>
+                        ● 100% de Taxa de Renovação
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Planos SaaS Disponíveis */}
+                  <div className="card-premium">
+                    <h3 style={{ fontSize: '18px', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <Award size={18} style={{ color: 'var(--primary)' }} />
+                      Planos de Assinatura da Plataforma BarberHub
+                    </h3>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '16px' }}>
+                      <div style={{ padding: '20px', borderRadius: '12px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                        <h4 style={{ fontSize: '16px', fontWeight: 'bold' }}>Plano Essencial</h4>
+                        <div style={{ fontSize: '24px', fontWeight: 'bold', color: 'var(--primary)' }}>R$ 99 <span style={{ fontSize: '13px', color: 'var(--muted)' }}>/mês</span></div>
+                        <ul style={{ fontSize: '13px', color: 'var(--muted)', display: 'flex', flexDirection: 'column', gap: '6px', paddingLeft: '16px' }}>
+                          <li>Até 2 Barbeiros</li>
+                          <li>Bot de Agendamento Automático</li>
+                          <li>Suporte via E-mail</li>
+                        </ul>
+                      </div>
+
+                      <div style={{ padding: '20px', borderRadius: '12px', background: 'rgba(212,175,55,0.05)', border: '1px solid var(--primary)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <h4 style={{ fontSize: '16px', fontWeight: 'bold' }}>Plano Pro (Mais Popular)</h4>
+                          <span style={{ fontSize: '10px', background: 'var(--primary)', color: '#000000', fontWeight: 'bold', padding: '2px 6px', borderRadius: '4px' }}>RECOMENDADO</span>
+                        </div>
+                        <div style={{ fontSize: '24px', fontWeight: 'bold', color: 'var(--primary)' }}>R$ 199 <span style={{ fontSize: '13px', color: 'var(--muted)' }}>/mês</span></div>
+                        <ul style={{ fontSize: '13px', color: 'var(--muted)', display: 'flex', flexDirection: 'column', gap: '6px', paddingLeft: '16px' }}>
+                          <li>Barbeiros Ilimitados</li>
+                          <li>Clube de Assinaturas & Recorrência</li>
+                          <li>Disparo de Marketing via WhatsApp</li>
+                          <li>Suporte Prioritário</li>
+                        </ul>
+                      </div>
+
+                      <div style={{ padding: '20px', borderRadius: '12px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                        <h4 style={{ fontSize: '16px', fontWeight: 'bold' }}>Plano Enterprise</h4>
+                        <div style={{ fontSize: '24px', fontWeight: 'bold', color: 'var(--primary)' }}>R$ 349 <span style={{ fontSize: '13px', color: 'var(--muted)' }}>/mês</span></div>
+                        <ul style={{ fontSize: '13px', color: 'var(--muted)', display: 'flex', flexDirection: 'column', gap: '6px', paddingLeft: '16px' }}>
+                          <li>Redes Multi-Franquias</li>
+                          <li>Atendimento por IA Avançado</li>
+                          <li>Gerente de Conta Dedicado</li>
+                        </ul>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ------------------------------------------------------------- */}
+              {/* SUB-TAB: COMUNICADOS (BROADCAST) */}
+              {/* ------------------------------------------------------------- */}
+              {adminSubTab === 'broadcast' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }} className="animate-fade-in">
+                  <div className="card-premium" style={{ padding: '24px' }}>
+                    <h3 style={{ fontSize: '18px', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <MessageSquare size={20} style={{ color: 'var(--primary)' }} />
+                      Transmissão de Comunicados Globais (WhatsApp Broadcast)
+                    </h3>
+                    <p style={{ color: 'var(--muted)', fontSize: '13px', marginBottom: '20px' }}>
+                      Envie um anúncio oficial diretamente para o WhatsApp de <strong>todos os {superUsers.filter(u => u.role === 'owner' && u.phone).length} proprietários de barbearias cadastrados</strong>.
+                    </p>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                      <div className="form-group">
+                        <label className="form-label">Mensagem do Comunicado</label>
+                        <textarea
+                          className="form-input"
+                          rows={6}
+                          placeholder="Ex: Prezado parceiro, informamos que no próximo domingo realizaremos uma atualização de infraestrutura das 02:00 às 03:00..."
+                          value={broadcastMessage}
+                          onChange={(e) => setBroadcastMessage(e.target.value)}
+                        />
+                      </div>
+
+                      {broadcastResult && (
+                        <div style={{ 
+                          padding: '12px 16px', 
+                          borderRadius: '10px', 
+                          background: broadcastResult.type === 'success' ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)', 
+                          color: broadcastResult.type === 'success' ? '#10b981' : '#ef4444',
+                          border: `1px solid ${broadcastResult.type === 'success' ? 'rgba(16,185,129,0.2)' : 'rgba(239,68,68,0.2)'}`,
+                          fontSize: '14px',
+                          fontWeight: 'bold'
+                        }}>
+                          {broadcastResult.message}
+                        </div>
+                      )}
+
+                      <button
+                        className="btn-primary"
+                        style={{ padding: '14px 24px', alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: '8px' }}
+                        disabled={broadcastSending || !broadcastMessage.trim()}
+                        onClick={handleSendBroadcast}
+                      >
+                        <MessageSquare size={18} />
+                        <span>{broadcastSending ? 'Enviando Comunicados...' : 'Disparar Comunicado Global'}</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ------------------------------------------------------------- */}
+              {/* SUB-TAB: LOGS DE AUDITORIA */}
+              {/* ------------------------------------------------------------- */}
+              {adminSubTab === 'audit' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }} className="animate-fade-in">
+                  <div className="card-premium">
+                    <h3 style={{ fontSize: '18px', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <Activity size={18} style={{ color: 'var(--primary)' }} />
+                      Logs de Auditoria & Atividades do Ecossistema
+                    </h3>
+                    <p style={{ color: 'var(--muted)', fontSize: '13px', marginBottom: '20px' }}>
+                      Registro de todas as ações de segurança, alterações financeiras e eventos críticos do ecossistema.
+                    </p>
+
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: '650px' }}>
+                        <thead>
+                          <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                            <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase' }}>Data & Hora</th>
+                            <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase' }}>Tipo</th>
+                            <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase' }}>Usuário / Agente</th>
+                            <th style={{ padding: '12px 8px', color: 'var(--muted)', fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase' }}>Evento / Ação</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {systemLogs.map((log) => (
+                            <tr key={log.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                              <td style={{ padding: '12px 8px', fontSize: '13px', color: 'var(--muted)', whiteSpace: 'nowrap' }}>{log.timestamp}</td>
+                              <td style={{ padding: '12px 8px', fontSize: '13px' }}>
+                                <span style={{
+                                  fontSize: '10px',
+                                  padding: '2px 8px',
+                                  borderRadius: '4px',
+                                  background: log.type === 'security' ? 'rgba(239,68,68,0.1)' : log.type === 'financial' ? 'rgba(16,185,129,0.1)' : 'rgba(59,130,246,0.1)',
+                                  color: log.type === 'security' ? '#ef4444' : log.type === 'financial' ? '#10b981' : '#3b82f6',
+                                  fontWeight: 'bold'
+                                }}>
+                                  {log.type.toUpperCase()}
+                                </span>
+                              </td>
+                              <td style={{ padding: '12px 8px', fontSize: '13px', fontWeight: 'bold' }}>{log.user}</td>
+                              <td style={{ padding: '12px 8px', fontSize: '13px' }}>{log.action}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ------------------------------------------------------------- */}
+              {/* SUB-TAB 4: INFRAESTRUTURA & BROKER */}
+              {/* ------------------------------------------------------------- */}
+              {adminSubTab === 'system' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }} className="animate-fade-in">
+                  
+                  {/* Arquitetura & Cluster Status */}
+                  <div className="card-premium" style={{ padding: '24px' }}>
+                    <h3 style={{ fontSize: '18px', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <Shield size={20} style={{ color: '#10b981' }} />
+                      Status da Arquitetura Multi-Tenant
+                    </h3>
+                    <p style={{ color: 'var(--muted)', fontSize: '13px', marginBottom: '20px' }}>
+                      Monitoramento em tempo real da comunicação entre a API Backend, o Redis Message Broker e o WhatsApp SessionManager Gateway.
+                    </p>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '16px' }}>
+                      <div style={{ padding: '16px', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.06)' }}>
+                        <div style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '4px' }}>Gateway Multi-Tenant Instance</div>
+                        <div style={{ fontSize: '16px', fontWeight: 'bold', color: '#10b981' }}>bot_whatsapp_gateway</div>
+                        <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '8px' }}>Map&lt;establishmentId, WASocket&gt; em memória</div>
+                      </div>
+
+                      <div style={{ padding: '16px', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.06)' }}>
+                        <div style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '4px' }}>Message Broker & Queue</div>
+                        <div style={{ fontSize: '16px', fontWeight: 'bold', color: 'var(--primary)' }}>Redis 7 + BullMQ</div>
+                        <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '8px' }}>whatsapp-inbound / whatsapp-outbound queues</div>
+                      </div>
+
+                      <div style={{ padding: '16px', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.06)' }}>
+                        <div style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: '4px' }}>Distributed Chat Lock</div>
+                        <div style={{ fontSize: '16px', fontWeight: 'bold', color: '#3b82f6' }}>Redlock Manager</div>
+                        <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '8px' }}>Trava de chat (lock:chat:estId:phone) TTL 15s</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -5518,7 +6975,7 @@ export const Dashboard: React.FC = () => {
                                         color: '#ffffff', 
                                         display: 'flex', 
                                         alignItems: 'center', 
-                                        justify: 'center', 
+                                        justifyContent: 'center', 
                                         fontWeight: 'bold', 
                                         fontSize: '11px',
                                         border: '1px solid rgba(212, 175, 55, 0.2)',

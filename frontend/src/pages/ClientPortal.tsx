@@ -17,7 +17,9 @@ import {
   MapPin,
   Sparkles,
   ArrowLeft,
-  X
+  X,
+  Menu,
+  Home
 } from 'lucide-react';
 import { apiRequest } from '../services/api';
 
@@ -107,6 +109,7 @@ export const ClientPortal: React.FC = () => {
   // Action / Modal States
   const [activeTab, setActiveTab] = useState<'appointments' | 'book' | 'plans'>('appointments');
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [isMobilePortalMenuOpen, setIsMobilePortalMenuOpen] = useState<boolean>(false);
 
   // Booking Flow States
   const [selectedEst, setSelectedEst] = useState<string>('');
@@ -649,19 +652,210 @@ export const ClientPortal: React.FC = () => {
               <Scissors size={18} />
             </div>
             <div>
-              <span style={{ fontSize: '14px', color: 'var(--muted)', display: 'block' }}>Olá, bem-vindo</span>
+              <span style={{ fontSize: '12px', color: 'var(--muted)', display: 'block' }}>Olá, bem-vindo</span>
               <span style={{ fontSize: '16px', fontWeight: 'bold' }}>{clientInfo?.name}</span>
             </div>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <button className="btn-secondary" style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }} onClick={handleLogout}>
+          {/* Desktop Right Header Controls */}
+          <div className="home-desktop-nav" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <button 
+              className="btn-secondary" 
+              style={{ padding: '8px 14px', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}
+              onClick={() => navigate('/')}
+            >
+              <Home size={14} />
+              <span>Início</span>
+            </button>
+            <button className="btn-secondary" style={{ padding: '8px 14px', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }} onClick={handleLogout}>
               <LogOut size={14} />
               <span>Sair</span>
             </button>
           </div>
+
+          {/* Mobile Hamburger Toggle Button */}
+          <button
+            className="home-mobile-hamburger"
+            onClick={() => setIsMobilePortalMenuOpen(!isMobilePortalMenuOpen)}
+            style={{
+              display: 'none',
+              background: 'rgba(255, 255, 255, 0.05)',
+              border: '1px solid rgba(255, 255, 255, 0.1)',
+              color: '#ffffff',
+              padding: '10px',
+              borderRadius: '8px',
+              cursor: 'pointer',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}
+            aria-label="Abrir Menu do Portal"
+          >
+            {isMobilePortalMenuOpen ? <X size={22} /> : <Menu size={22} />}
+          </button>
         </div>
       </header>
+
+      {/* Mobile Drawer Overlay for Client Portal */}
+      {isMobilePortalMenuOpen && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100vw',
+          height: '100vh',
+          zIndex: 99999,
+          display: 'flex',
+          justifyContent: 'flex-end',
+          background: 'rgba(0, 0, 0, 0.75)',
+          backdropFilter: 'blur(8px)',
+          animation: 'fadeIn 0.2s ease'
+        }} onClick={() => setIsMobilePortalMenuOpen(false)}>
+          <div style={{
+            width: '85%',
+            maxWidth: '320px',
+            height: '100%',
+            background: '#141418',
+            borderLeft: '1px solid rgba(255, 255, 255, 0.1)',
+            padding: '24px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '24px',
+            boxShadow: '-10px 0 30px rgba(0,0,0,0.8)',
+            animation: 'slideLeft 0.25s ease'
+          }} onClick={(e) => e.stopPropagation()}>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <User size={20} style={{ color: 'var(--primary)' }} />
+                <div>
+                  <span style={{ fontSize: '12px', color: 'var(--muted)', display: 'block' }}>Cliente Portal</span>
+                  <span style={{ fontWeight: 'bold', fontSize: '16px' }}>{clientInfo?.name}</span>
+                </div>
+              </div>
+              <button 
+                onClick={() => setIsMobilePortalMenuOpen(false)}
+                style={{ background: 'transparent', border: 'none', color: '#ffffff', cursor: 'pointer', padding: '4px' }}
+              >
+                <X size={24} />
+              </button>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', flex: 1 }}>
+              <button
+                onClick={() => { setActiveTab('appointments'); setIsMobilePortalMenuOpen(false); }}
+                style={{
+                  width: '100%',
+                  padding: '14px 16px',
+                  borderRadius: '10px',
+                  background: activeTab === 'appointments' ? 'rgba(212,175,55,0.15)' : 'rgba(255,255,255,0.03)',
+                  border: activeTab === 'appointments' ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.06)',
+                  color: activeTab === 'appointments' ? 'var(--primary)' : '#ffffff',
+                  fontWeight: 'bold',
+                  fontSize: '15px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px',
+                  cursor: 'pointer',
+                  textAlign: 'left'
+                }}
+              >
+                <Calendar size={18} />
+                Meus Agendamentos
+              </button>
+
+              <button
+                onClick={() => { setActiveTab('book'); setIsMobilePortalMenuOpen(false); }}
+                style={{
+                  width: '100%',
+                  padding: '14px 16px',
+                  borderRadius: '10px',
+                  background: activeTab === 'book' ? 'rgba(212,175,55,0.15)' : 'rgba(255,255,255,0.03)',
+                  border: activeTab === 'book' ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.06)',
+                  color: activeTab === 'book' ? 'var(--primary)' : '#ffffff',
+                  fontWeight: 'bold',
+                  fontSize: '15px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px',
+                  cursor: 'pointer',
+                  textAlign: 'left'
+                }}
+              >
+                <Plus size={18} />
+                Agendar Horário
+              </button>
+
+              <button
+                onClick={() => { setActiveTab('plans'); setIsMobilePortalMenuOpen(false); }}
+                style={{
+                  width: '100%',
+                  padding: '14px 16px',
+                  borderRadius: '10px',
+                  background: activeTab === 'plans' ? 'rgba(212,175,55,0.15)' : 'rgba(255,255,255,0.03)',
+                  border: activeTab === 'plans' ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.06)',
+                  color: activeTab === 'plans' ? 'var(--primary)' : '#ffffff',
+                  fontWeight: 'bold',
+                  fontSize: '15px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px',
+                  cursor: 'pointer',
+                  textAlign: 'left'
+                }}
+              >
+                <Sparkles size={18} />
+                Assinaturas / Planos
+              </button>
+
+              <button
+                onClick={() => { setIsMobilePortalMenuOpen(false); navigate('/'); }}
+                style={{
+                  width: '100%',
+                  padding: '14px 16px',
+                  borderRadius: '10px',
+                  background: 'rgba(255,255,255,0.03)',
+                  border: '1px solid rgba(255,255,255,0.06)',
+                  color: '#ffffff',
+                  fontWeight: '500',
+                  fontSize: '15px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  marginTop: '12px'
+                }}
+              >
+                <Home size={18} style={{ color: 'var(--primary)' }} />
+                Página Inicial (Catálogo)
+              </button>
+            </div>
+
+            <button 
+              className="btn-primary" 
+              style={{ 
+                width: '100%', 
+                justifyContent: 'center', 
+                padding: '14px', 
+                background: '#ef4444', 
+                color: '#ffffff',
+                border: 'none',
+                borderRadius: '10px'
+              }} 
+              onClick={() => { setIsMobilePortalMenuOpen(false); handleLogout(); }}
+            >
+              <LogOut size={18} />
+              <span>Sair da Conta</span>
+            </button>
+          </div>
+          <style>{`
+            @keyframes slideLeft {
+              from { transform: translateX(100%); }
+              to { transform: translateX(0); }
+            }
+          `}</style>
+        </div>
+      )}
 
       {/* TOAST SYSTEM */}
       {toast && (
@@ -675,23 +869,23 @@ export const ClientPortal: React.FC = () => {
       <main style={{ flex: 1, maxWidth: '1000px', width: '100%', margin: '0 auto', padding: '24px 20px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
         
         {/* MENU TABS */}
-        <div style={{ display: 'flex', gap: '12px', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '12px' }}>
+        <div style={{ display: 'flex', gap: '12px', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '12px', overflowX: 'auto', whiteSpace: 'nowrap', maxWidth: '100%' }}>
           <button 
-            style={{ padding: '10px 16px', borderRadius: '10px', border: 'none', background: activeTab === 'appointments' ? 'rgba(212,175,55,0.1)' : 'transparent', color: activeTab === 'appointments' ? 'var(--primary)' : 'var(--muted)', fontWeight: 'bold', fontSize: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }} 
+            style={{ flex: '0 0 auto', padding: '10px 16px', borderRadius: '10px', border: 'none', background: activeTab === 'appointments' ? 'rgba(212,175,55,0.1)' : 'transparent', color: activeTab === 'appointments' ? 'var(--primary)' : 'var(--muted)', fontWeight: 'bold', fontSize: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }} 
             onClick={() => setActiveTab('appointments')}
           >
             <Calendar size={16} />
             Meus Agendamentos
           </button>
           <button 
-            style={{ padding: '10px 16px', borderRadius: '10px', border: 'none', background: activeTab === 'book' ? 'rgba(212,175,55,0.1)' : 'transparent', color: activeTab === 'book' ? 'var(--primary)' : 'var(--muted)', fontWeight: 'bold', fontSize: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }} 
+            style={{ flex: '0 0 auto', padding: '10px 16px', borderRadius: '10px', border: 'none', background: activeTab === 'book' ? 'rgba(212,175,55,0.1)' : 'transparent', color: activeTab === 'book' ? 'var(--primary)' : 'var(--muted)', fontWeight: 'bold', fontSize: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }} 
             onClick={() => setActiveTab('book')}
           >
             <Plus size={16} />
             Agendar Horário
           </button>
           <button 
-            style={{ padding: '10px 16px', borderRadius: '10px', border: 'none', background: activeTab === 'plans' ? 'rgba(212,175,55,0.1)' : 'transparent', color: activeTab === 'plans' ? 'var(--primary)' : 'var(--muted)', fontWeight: 'bold', fontSize: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }} 
+            style={{ flex: '0 0 auto', padding: '10px 16px', borderRadius: '10px', border: 'none', background: activeTab === 'plans' ? 'rgba(212,175,55,0.1)' : 'transparent', color: activeTab === 'plans' ? 'var(--primary)' : 'var(--muted)', fontWeight: 'bold', fontSize: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }} 
             onClick={() => setActiveTab('plans')}
           >
             <Sparkles size={16} />

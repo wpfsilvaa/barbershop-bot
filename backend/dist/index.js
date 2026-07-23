@@ -49,6 +49,11 @@ app.use(express_1.default.urlencoded({ limit: '10mb', extended: true }));
 // Custom Security Middlewares (XSS Prevention & CSRF Double Submit Validation)
 app.use(security_1.xssSanitizer);
 app.use(security_1.csrfCheck);
+// Request Logger Middleware
+app.use((req, res, next) => {
+    console.log(`[HTTP] ${req.method} ${req.url}`);
+    next();
+});
 // API Routes prefix
 app.use('/api', routes_1.default);
 // Health check endpoint

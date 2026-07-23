@@ -1,5 +1,7 @@
 const API_BASE = '/api';
 
+export const getApiUrl = (endpoint: string) => `${API_BASE}${endpoint}`;
+
 export const getAuthToken = () => localStorage.getItem('token');
 export const setAuthToken = (token: string | null) => {
   if (token) {

@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import pool from '../config/db';
 import bcrypt from 'bcryptjs';
-import { getActiveSessionsList, disconnectWhatsAppSession, startWhatsAppSession, getContainerState } from '../services/whatsappManager';
+import { getActiveSessionsList, disconnectWhatsAppSession, startWhatsAppSession } from '../services/whatsappManager';
 
 // 1. List all users across all establishments (Super Admin)
 export const listAllUsers = async (req: Request, res: Response) => {
@@ -62,19 +62,14 @@ export const listWhatsAppSessions = async (req: Request, res: Response) => {
       'SELECT establishment_id, status, phone FROM whatsapp_sessions'
     );
     
-    const sessionsPayload = await Promise.all(establishmentsRes.rows.map(async (est) => {
+    const sessionsPayload = establishmentsRes.rows.map((est) => {
       const sessionDb = sessionsRes.rows.find(s => s.establishment_id === est.id);
       
-      // Map standard status values to frontend expected strings ('CONNECTED' or 'DISCONNECTED')
       let status = 'DISCONNECTED';
       if (sessionDb && sessionDb.status === 'connected') {
         status = 'CONNECTED';
       }
 
-      // Check if container is running
-      const containerName = `barberhub-whatsapp-${est.id}`;
-      const dockerState = await getContainerState(containerName);
-      
       return {
         establishment_id: est.id,
         establishment_name: est.name,
@@ -84,9 +79,9 @@ export const listWhatsAppSessions = async (req: Request, res: Response) => {
         expires_at: est.expires_at,
         status: status,
         phone: sessionDb ? sessionDb.phone : null,
-        container_running: dockerState.running
+        container_running: status === 'CONNECTED'
       };
-    }));
+    });
 
     return res.json(sessionsPayload);
   } catch (error) {

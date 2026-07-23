@@ -50,8 +50,16 @@ const createOrUpdatePlan = async (req, res) => {
             await client.query('UPDATE clients SET name = $1 WHERE id = $2', [client_name, clientId]);
         }
         else {
-            const newClient = await client.query('INSERT INTO clients (establishment_id, name, phone) VALUES ($1, $2, $3) RETURNING id', [establishmentId, client_name, client_phone]);
-            clientId = newClient.rows[0].id;
+            // Check if client exists globally (registered via client portal)
+            const globalClientCheck = await client.query('SELECT id FROM clients WHERE phone = $1 AND establishment_id IS NULL LIMIT 1', [client_phone]);
+            if (globalClientCheck.rows.length > 0) {
+                clientId = globalClientCheck.rows[0].id;
+                await client.query('UPDATE clients SET establishment_id = $1, name = $2 WHERE id = $3', [establishmentId, client_name, clientId]);
+            }
+            else {
+                const newClient = await client.query('INSERT INTO clients (establishment_id, name, phone) VALUES ($1, $2, $3) RETURNING id', [establishmentId, client_name, client_phone]);
+                clientId = newClient.rows[0].id;
+            }
         }
         // 3. Insert or update the plan (UPSERT)
         const planResult = await client.query(`INSERT INTO client_plans (establishment_id, client_id, barber_id, plan_type, preferred_time, preferred_day_of_week, is_active)

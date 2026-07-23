@@ -43,6 +43,31 @@ h1, h2, h3, h4, .brand-font {
   letter-spacing: 0.5px;
 }
 
+.pulse-dot-red {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: #ffffff;
+  box-shadow: 0 0 0 rgba(239, 68, 68, 0.7);
+  display: inline-block;
+  animation: pulseRed 1.5s infinite;
+}
+
+@keyframes pulseRed {
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+  }
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 6px rgba(239, 68, 68, 0);
+  }
+  100% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+  }
+}
+
 a {
   color: var(--primary);
   text-decoration: none;
@@ -253,8 +278,36 @@ a:hover {
   gap: 12px;
 }
 
+/* Button & Container Overflow Protection */
+button, input, select, textarea {
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.btn-primary, .btn-secondary {
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
 /* Responsive Styling for Mobile */
+@media (max-width: 768px) {
+  .home-desktop-nav {
+    display: none !important;
+  }
+  .home-mobile-hamburger {
+    display: inline-flex !important;
+  }
+}
+
 @media (max-width: 900px) {
+  /* Dashboard Header Mobile Hamburger Toggle */
+  .dashboard-header-right-desktop {
+    display: none !important;
+  }
+  .dashboard-mobile-hamburger {
+    display: inline-flex !important;
+  }
+
   /* Layout Structure */
   .dashboard-main-container {
     flex-direction: column !important;
@@ -263,24 +316,7 @@ a:hover {
   }
 
   .dashboard-sidebar-nav {
-    flex-direction: row !important;
-    min-width: 100% !important;
-    width: 100% !important;
-    overflow-x: auto !important;
-    white-space: nowrap !important;
-    padding: 10px !important;
-    align-self: stretch !important;
-    box-shadow: none !important;
-  }
-
-  .dashboard-sidebar-nav button {
-    flex: 0 0 auto !important;
-    padding: 8px 14px !important;
-    font-size: 13px !important;
-  }
-
-  .dashboard-sidebar-nav button span {
-    display: inline !important;
+    display: none !important; /* Managed via Mobile Sandwich Drawer for clean UX */
   }
 
   /* Responsive Row / Columns inside Tabs */
@@ -368,6 +404,23 @@ a:hover {
   }
 }
 
+@media (max-width: 600px) {
+  /* Form & Modal Buttons Vertical Stacking on Extra Small Mobile */
+  .modal-action-buttons,
+  .form-action-buttons {
+    flex-direction: column-reverse !important;
+    width: 100% !important;
+    gap: 10px !important;
+  }
+
+  .modal-action-buttons button,
+  .form-action-buttons button {
+    width: 100% !important;
+    justify-content: center !important;
+  }
+}
+
 .hide-scrollbar::-webkit-scrollbar {
   display: none;
 }
+

@@ -216,6 +216,16 @@ const createEstablishmentClient = async (req, res) => {
         if (checkRes.rows.length > 0) {
             return res.status(400).json({ error: 'Já existe um cliente com este número de telefone cadastrado neste estabelecimento.' });
         }
+        // Check if client exists globally (registered via client portal)
+        const globalCheck = await db_1.default.query('SELECT id FROM clients WHERE phone = $1 AND establishment_id IS NULL LIMIT 1', [cleanPhone]);
+        if (globalCheck.rows.length > 0) {
+            const globalClient = globalCheck.rows[0];
+            const result = await db_1.default.query(`UPDATE clients 
+         SET establishment_id = $1, name = $2, notes = $3, accept_promotions = true
+         WHERE id = $4
+         RETURNING *`, [establishmentId, name, notes || '', globalClient.id]);
+            return res.json(result.rows[0]);
+        }
         const result = await db_1.default.query(`INSERT INTO clients (establishment_id, name, phone, notes, accept_promotions) 
        VALUES ($1, $2, $3, $4, $5) 
        RETURNING *`, [establishmentId, name, cleanPhone, notes || '', true]);

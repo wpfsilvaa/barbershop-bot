@@ -55,7 +55,11 @@ exports.authClient = authClient;
 // 2. Fetch Client Info and Dashboard Data
 const getClientData = async (req, res) => {
     const clientId = req.user.id;
+    const phone = req.user.phone;
     try {
+        // Fetch all client IDs associated with this phone number to aggregate bookings
+        const clientIdsRes = await db_1.default.query('SELECT id FROM clients WHERE phone = $1', [phone]);
+        const clientIds = clientIdsRes.rows.map(r => r.id);
         // 1. Fetch bookings
         const bookingsRes = await db_1.default.query(`SELECT a.id, a.appointment_time, a.status, a.cancellation_reason,
               s.name as service_name, s.price, s.duration_minutes,
@@ -67,8 +71,8 @@ const getClientData = async (req, res) => {
        JOIN users u ON a.barber_id = u.id
        JOIN establishments e ON a.establishment_id = e.id
        LEFT JOIN feedbacks f ON f.appointment_id = a.id
-       WHERE a.client_id = $1
-       ORDER BY a.appointment_time DESC`, [clientId]);
+       WHERE a.client_id = ANY($1)
+       ORDER BY a.appointment_time DESC`, [clientIds]);
         // 2. Fetch active plans
         const plansRes = await db_1.default.query(`SELECT cp.id, cp.plan_type, cp.preferred_time, cp.preferred_day_of_week, cp.is_active, cp.created_at,
               b.name as barber_name,
@@ -76,8 +80,8 @@ const getClientData = async (req, res) => {
        FROM client_plans cp
        JOIN users b ON cp.barber_id = b.id
        JOIN establishments e ON cp.establishment_id = e.id
-       WHERE cp.client_id = $1 AND cp.is_active = true
-       ORDER BY cp.created_at DESC`, [clientId]);
+       WHERE cp.client_id = ANY($1) AND cp.is_active = true
+       ORDER BY cp.created_at DESC`, [clientIds]);
         // 3. Fetch all establishments (to allow booking)
         const estRes = await db_1.default.query(`SELECT id, name, logo_url, address, opening_time, closing_time 
        FROM establishments 
