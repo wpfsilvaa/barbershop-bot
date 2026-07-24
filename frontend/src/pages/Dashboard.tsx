@@ -198,6 +198,7 @@ export const Dashboard: React.FC = () => {
   // Form states - Appointments (Create)
   const [showApptModal, setShowApptModal] = useState(false);
   const [apptBarber, setApptBarber] = useState('');
+  const [apptDate, setApptDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [apptClientName, setApptClientName] = useState('');
   const [apptClientPhone, setApptClientPhone] = useState('');
   const [apptCountryDdi, setApptCountryDdi] = useState('55');
@@ -212,6 +213,7 @@ export const Dashboard: React.FC = () => {
   const [rescheduleApptId, setRescheduleApptId] = useState('');
   const [rescheduleClientName, setRescheduleClientName] = useState('');
   const [rescheduleBarber, setRescheduleBarber] = useState('');
+  const [rescheduleDate, setRescheduleDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [rescheduleTime, setRescheduleTime] = useState('');
   const [rescheduleReason, setRescheduleReason] = useState('');
   const [rescheduleSlots, setRescheduleSlots] = useState<string[]>([]);
@@ -772,22 +774,23 @@ export const Dashboard: React.FC = () => {
   // Load slots for manual creation modal
   useEffect(() => {
     const fetchSlots = async () => {
-      if (!user?.establishment_id || !apptBarber || !filterDate) return;
+      if (!user?.establishment_id || !apptBarber || !apptDate) return;
       setLoadingSlots(true);
       try {
         const slots = await apiRequest(
-          `/establishments/${user.establishment_id}/barbers/${apptBarber}/available-slots?date=${filterDate}`,
+          `/establishments/${user.establishment_id}/barbers/${apptBarber}/available-slots?date=${apptDate}`,
           'GET'
         );
         setApptSlots(slots);
       } catch (err: any) {
         console.error(err);
+        setApptSlots([]);
       } finally {
         setLoadingSlots(false);
       }
     };
     fetchSlots();
-  }, [apptBarber, filterDate, user?.establishment_id]);
+  }, [apptBarber, apptDate, user?.establishment_id]);
 
   useEffect(() => {
     if (user?.role === 'admin') {
@@ -850,22 +853,23 @@ export const Dashboard: React.FC = () => {
   // Load slots for reschedule modal
   useEffect(() => {
     const fetchRescheduleSlots = async () => {
-      if (!user?.establishment_id || !rescheduleBarber || !filterDate) return;
+      if (!user?.establishment_id || !rescheduleBarber || !rescheduleDate) return;
       setLoadingRescheduleSlots(true);
       try {
         const slots = await apiRequest(
-          `/establishments/${user.establishment_id}/barbers/${rescheduleBarber}/available-slots?date=${filterDate}`,
+          `/establishments/${user.establishment_id}/barbers/${rescheduleBarber}/available-slots?date=${rescheduleDate}`,
           'GET'
         );
         setRescheduleSlots(slots);
       } catch (err: any) {
         console.error(err);
+        setRescheduleSlots([]);
       } finally {
         setLoadingRescheduleSlots(false);
       }
     };
     fetchRescheduleSlots();
-  }, [rescheduleBarber, filterDate, user?.establishment_id]);
+  }, [rescheduleBarber, rescheduleDate, user?.establishment_id]);
 
   // Create booking
   const handleCreateAppointment = async (e: React.FormEvent) => {
@@ -1252,6 +1256,8 @@ export const Dashboard: React.FC = () => {
     setRescheduleApptId(appt.id);
     setRescheduleClientName(appt.client_name);
     setRescheduleBarber(appt.barber_id);
+    const existingDate = appt.appointment_time ? new Date(appt.appointment_time).toISOString().split('T')[0] : filterDate;
+    setRescheduleDate(existingDate);
     setRescheduleTime('');
     setRescheduleReason('');
     setShowRescheduleModal(true);
@@ -1679,6 +1685,11 @@ export const Dashboard: React.FC = () => {
     playNotificationSoundRef.current = playNotificationSound;
   });
 
+  const selectedChatRef = useRef(selectedChat);
+  useEffect(() => {
+    selectedChatRef.current = selectedChat;
+  }, [selectedChat]);
+
   // Auto-scroll chat to latest message
   useEffect(() => {
     chatMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -1692,8 +1703,9 @@ export const Dashboard: React.FC = () => {
     try {
       const data = await apiRequest(`/establishments/${targetEstId}/bot/chats`, 'GET');
       setActiveChats(data);
-      if (selectedChat) {
-        const updated = data.find((c: any) => c.phone === selectedChat.phone);
+      const currentSelected = selectedChatRef.current;
+      if (currentSelected) {
+        const updated = data.find((c: any) => c.phone === currentSelected.phone || (c.rawJid && c.rawJid === currentSelected.phone));
         if (updated) {
           setSelectedChat(updated);
           setLocalChatMessages(updated.messages || []);
@@ -3437,6 +3449,8 @@ export const Dashboard: React.FC = () => {
                   <p style={{ color: 'var(--muted)', fontSize: '14px' }}>Gerencie as reservas ou efetue reagendamentos com aviso via bot</p>
                 </div>
                 <button className="btn-primary" onClick={() => {
+                  const todayStr = new Date().toISOString().split('T')[0];
+                  setApptDate(filterDate || todayStr);
                   if (user?.role === 'barber') setApptBarber(user.id);
                   else if (barbers.length > 0) setApptBarber(barbers[0].id);
                   loadClients();
@@ -7669,7 +7683,7 @@ export const Dashboard: React.FC = () => {
             <form onSubmit={handleCreateAppointment}>
               <div className="form-group">
                 <label className="form-label">Data do Agendamento</label>
-                <input type="date" className="form-input" value={filterDate} onChange={(e) => setFilterDate(e.target.value)} required />
+                <input type="date" className="form-input" value={apptDate} onChange={(e) => setApptDate(e.target.value)} required />
               </div>
 
               {user?.role !== 'barber' ? (
@@ -7831,7 +7845,16 @@ export const Dashboard: React.FC = () => {
                 ) : !apptBarber ? (
                   <p style={{ color: 'var(--muted)', fontSize: '14px' }}>Selecione um barbeiro primeiro.</p>
                 ) : apptSlots.length === 0 ? (
-                  <p style={{ color: 'var(--error)', fontSize: '14px' }}>Sem horários vagos para este profissional nesta data.</p>
+                  <div style={{ padding: '10px 14px', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '8px' }}>
+                    <p style={{ color: '#F87171', fontSize: '13px', margin: 0, fontWeight: '500' }}>
+                      Sem horários vagos para este profissional nesta data.
+                    </p>
+                    {apptDate === new Date().toISOString().split('T')[0] && (
+                      <p style={{ color: 'var(--muted)', fontSize: '12px', margin: '4px 0 0 0' }}>
+                        💡 Os horários de hoje já passaram ou o expediente encerrou. Selecione a data de amanhã ou uma data futura.
+                      </p>
+                    )}
+                  </div>
                 ) : (
                   <select className="form-input" value={apptTime} onChange={(e) => setApptTime(e.target.value)} required>
                     <option value="">Escolha o horário...</option>
@@ -7866,7 +7889,7 @@ export const Dashboard: React.FC = () => {
 
               <div className="form-group">
                 <label className="form-label">Data do Novo Agendamento</label>
-                <input type="date" className="form-input" value={filterDate} onChange={(e) => setFilterDate(e.target.value)} required />
+                <input type="date" className="form-input" value={rescheduleDate} onChange={(e) => setRescheduleDate(e.target.value)} required />
               </div>
 
               <div className="form-group">
@@ -7884,7 +7907,16 @@ export const Dashboard: React.FC = () => {
                 ) : !rescheduleBarber ? (
                   <p style={{ color: 'var(--muted)', fontSize: '14px' }}>Selecione um barbeiro primeiro.</p>
                 ) : rescheduleSlots.length === 0 ? (
-                  <p style={{ color: 'var(--error)', fontSize: '14px' }}>Sem horários livres nesta data.</p>
+                  <div style={{ padding: '10px 14px', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '8px' }}>
+                    <p style={{ color: '#F87171', fontSize: '13px', margin: 0, fontWeight: '500' }}>
+                      Sem horários livres para este profissional nesta data.
+                    </p>
+                    {rescheduleDate === new Date().toISOString().split('T')[0] && (
+                      <p style={{ color: 'var(--muted)', fontSize: '12px', margin: '4px 0 0 0' }}>
+                        💡 Os horários de hoje já passaram ou o expediente encerrou. Selecione a data de amanhã ou uma data futura.
+                      </p>
+                    )}
+                  </div>
                 ) : (
                   <select className="form-input" value={rescheduleTime} onChange={(e) => setRescheduleTime(e.target.value)} required>
                     <option value="">Escolha o horário...</option>
