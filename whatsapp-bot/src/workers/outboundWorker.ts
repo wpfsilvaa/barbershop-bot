@@ -14,7 +14,10 @@ interface OutboundJobData {
 import { redisConnection } from '../config/redis';
 
 async function recordOutboundChatMessage(establishmentId: string, phone: string, text: string) {
-  const cleanPhone = phone.split('@')[0];
+  let cleanPhone = phone.split('@')[0].replace(/\D/g, '');
+  if (cleanPhone.startsWith('55') && cleanPhone.length === 12) {
+    cleanPhone = cleanPhone.substring(0, 4) + '9' + cleanPhone.substring(4);
+  }
   try {
     await pool.query(
       `INSERT INTO whatsapp_messages (establishment_id, phone, message_text, from_me, created_at)
@@ -22,11 +25,18 @@ async function recordOutboundChatMessage(establishmentId: string, phone: string,
       [establishmentId, cleanPhone, text]
     );
 
-    await pool.query(
-      `UPDATE whatsapp_chats 
-       SET last_message_time = NOW()
-       WHERE establishment_id = $1 AND phone = $2`,
+    const clientRes = await pool.query(
+      `SELECT name FROM clients WHERE establishment_id = $1 AND phone = $2 LIMIT 1`,
       [establishmentId, cleanPhone]
+    );
+    const clientName = clientRes.rows[0]?.name || 'Cliente';
+
+    await pool.query(
+      `INSERT INTO whatsapp_chats (establishment_id, phone, bot_state, current_node_id, waiting_for_input, push_name, last_message_time)
+       VALUES ($1, $2, 'PAUSED', 'welcome', false, $3, NOW())
+       ON CONFLICT (establishment_id, phone)
+       DO UPDATE SET last_message_time = NOW()`,
+      [establishmentId, cleanPhone, clientName]
     );
 
     await redisConnection.publish('whatsapp-chat-updates', JSON.stringify({

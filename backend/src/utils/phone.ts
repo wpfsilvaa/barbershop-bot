@@ -14,7 +14,7 @@
  */
 
 const DDD_MIN_WITH_NINTH_DIGIT = 11;
-const DDD_MAX_WITH_NINTH_DIGIT = 28;
+const DDD_MAX_WITH_NINTH_DIGIT = 99;
 
 export function normalizePhone(input: string | null | undefined): string {
   if (!input) return '';
@@ -24,6 +24,14 @@ export function normalizePhone(input: string | null | undefined): string {
 
   // Remove zeros de discagem nacional (ex.: 0 11 99999-9999)
   digits = digits.replace(/^0+/, '');
+
+  // Identificação de LID (IDs numéricos de 14+ dígitos gerados pelo WhatsApp)
+  if (digits.length > 13) {
+    if (digits.startsWith('55') && digits.length === 17) {
+      return digits.substring(2);
+    }
+    return digits;
+  }
 
   // Garante o DDI 55. Números com 10 ou 11 dígitos são locais (DDD + assinante).
   if (!digits.startsWith('55') || digits.length <= 11) {

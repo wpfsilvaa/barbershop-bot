@@ -259,7 +259,7 @@ export class SessionManager {
           if (!rawPhone) continue;
           if (rawPhone.endsWith('@g.us') || rawPhone.endsWith('@broadcast')) continue;
 
-          const cleanPhone = rawPhone.split('@')[0];
+          const cleanPhone = await this.resolveCanonicalPhone(establishmentId, rawPhone);
           const fromMe = !!msg.key?.fromMe;
           
           // Extract message text supporting ephemeral, extended, and media captions
@@ -333,6 +333,47 @@ export class SessionManager {
   // O próprio auth store do Baileys guarda o mapeamento (`lid-mapping`), então dá
   // para distinguir LID de telefone com um dado real em vez de heurística de
   // tamanho: se existe `<id>_reverse`, o identificador é um LID.
+  private async resolveCanonicalPhone(establishmentId: string, remoteJid: string): Promise<string> {
+    let digits = remoteJid.split('@')[0].replace(/\D/g, '');
+
+    const isLid = remoteJid.endsWith('@lid') || (!digits.startsWith('55') && digits.length >= 13);
+
+    if (isLid) {
+      try {
+        const res = await this.pool.query(
+          `SELECT key_data FROM whatsapp_auth_states
+           WHERE establishment_id = $1 AND key_type = 'lid-mapping' AND key_id = $2`,
+          [establishmentId, `${digits}_reverse`]
+        );
+        if (res.rows.length > 0) {
+          let realPhone = res.rows[0].key_data;
+          if (typeof realPhone === 'string') realPhone = realPhone.replace(/"/g, '');
+          if (realPhone) {
+            digits = realPhone.replace(/\D/g, '');
+          }
+        }
+      } catch (err) {}
+
+      if (!digits.startsWith('55')) {
+        try {
+          const globalRes = await this.pool.query(
+            `SELECT phone FROM lid_mappings WHERE lid = $1`,
+            [digits]
+          );
+          if (globalRes.rows.length > 0 && globalRes.rows[0].phone) {
+            digits = globalRes.rows[0].phone.replace(/\D/g, '');
+          }
+        } catch (err) {}
+      }
+    }
+
+    if (digits.startsWith('55') && digits.length === 12) {
+      digits = digits.substring(0, 4) + '9' + digits.substring(4);
+    }
+
+    return digits;
+  }
+
   private async resolveLidJid(establishmentId: string, digits: string): Promise<string | null> {
     try {
       const res = await this.pool.query(
@@ -342,8 +383,6 @@ export class SessionManager {
       );
       if (res.rows.length === 0) return null;
 
-      // Endereçamos pelo próprio LID: é o endereço canônico da sessão de criptografia
-      // no Baileys 7 e nem todo contato tem número de telefone mapeado.
       return `${digits}@lid`;
     } catch (err: any) {
       console.error(`[SessionManager] LID lookup failed for ${digits}:`, err.message);
@@ -361,10 +400,6 @@ export class SessionManager {
     let cleanPhone = phone.replace(/\D/g, '');
     let targetJid: string | null = null;
 
-    // 1. O chamador já passou um JID completo: respeitamos o domínio original
-    //    (`@lid` e `@s.whatsapp.net` não são intercambiáveis). Só aceitamos os dois
-    //    domínios de conversa individual — um `@g.us`/`@broadcast`/`@newsletter` que
-    //    escapasse para a fila viraria disparo em grupo ou lista de transmissão.
     if (phone.includes('@')) {
       const normalized = jidNormalizedUser(phone);
       const domain = normalized.split('@')[1];
@@ -376,29 +411,69 @@ export class SessionManager {
       }
     }
 
-    // 2. Só dígitos: pode ser um LID disfarçado de telefone.
-    if (!targetJid) {
-      targetJid = await this.resolveLidJid(establishmentId, cleanPhone);
+    const variations: string[] = [cleanPhone];
+    if (cleanPhone.startsWith('55') && cleanPhone.length === 13) {
+      variations.push(cleanPhone.substring(0, 4) + cleanPhone.substring(5));
+    } else if (cleanPhone.startsWith('55') && cleanPhone.length === 12) {
+      variations.push(cleanPhone.substring(0, 4) + '9' + cleanPhone.substring(4));
     }
 
-    // 3. Telefone de verdade: resolve o JID real (cobre o 9º dígito brasileiro).
     if (!targetJid) {
-      targetJid = `${cleanPhone}@s.whatsapp.net`;
+      if (cleanPhone.startsWith('55') && cleanPhone.length === 13) {
+        targetJid = `${cleanPhone}@s.whatsapp.net`;
+      }
+    }
+
+    // 1. Query official WhatsApp server via sock.onWhatsApp FIRST for other numbers or LIDs
+    if (!targetJid) {
+      for (const variant of variations) {
+        try {
+          const results = await sock.onWhatsApp(variant);
+          if (results && results.length > 0 && results[0]?.exists) {
+            targetJid = results[0].jid;
+            console.log(`[SessionManager] onWhatsApp verified JID for ${variant}: ${targetJid}`);
+            break;
+          }
+        } catch (err: any) {
+          console.warn(`[SessionManager] onWhatsApp query failed for ${variant}:`, err.message);
+        }
+      }
+    }
+
+    // 2. Fallback: check lid-mapping table in whatsapp_auth_states
+    if (!targetJid) {
       try {
-        const results = await sock.onWhatsApp(cleanPhone);
-        if (results && results.length > 0 && results[0].exists) {
-          targetJid = results[0].jid;
-        } else if (cleanPhone.startsWith('55') && cleanPhone.length === 13) {
-          // Try 12-digit variant without 9th digit
-          const altPhone = cleanPhone.substring(0, 4) + cleanPhone.substring(5);
-          const altResults = await sock.onWhatsApp(altPhone);
-          if (altResults && altResults.length > 0 && altResults[0].exists) {
-            targetJid = altResults[0].jid;
+        const lidRes = await this.pool.query(
+          `SELECT key_data FROM whatsapp_auth_states
+           WHERE establishment_id = $1 AND key_type = 'lid-mapping' AND key_id = ANY($2)`,
+          [establishmentId, variations]
+        );
+        if (lidRes.rows.length > 0) {
+          let lidVal = lidRes.rows[0].key_data;
+          if (typeof lidVal === 'string') lidVal = lidVal.replace(/"/g, '');
+          if (lidVal) {
+            targetJid = `${lidVal}@lid`;
           }
         }
-      } catch (err: any) {
-        console.warn(`[SessionManager] onWhatsApp query failed for ${cleanPhone}, falling back to direct JID:`, err.message);
-      }
+      } catch (err) {}
+    }
+
+    // 3. Fallback: check global lid_mappings table
+    if (!targetJid) {
+      try {
+        const globalRes = await this.pool.query(
+          `SELECT lid FROM lid_mappings WHERE phone = ANY($1)`,
+          [variations]
+        );
+        if (globalRes.rows.length > 0 && globalRes.rows[0].lid) {
+          targetJid = `${globalRes.rows[0].lid}@lid`;
+        }
+      } catch (err) {}
+    }
+
+    // 4. Default fallback: direct @s.whatsapp.net
+    if (!targetJid) {
+      targetJid = `${cleanPhone}@s.whatsapp.net`;
     }
 
     console.log(`[SessionManager] Sending outbound message to ${targetJid} (Tenant: ${establishmentId})...`);
@@ -406,8 +481,6 @@ export class SessionManager {
     const textWithSignature = `${text}\n\n${BOT_SIGNATURE}`;
     const sent = await sock.sendMessage(targetJid, { text: textWithSignature });
 
-    // Sem esta checagem o envio era considerado bem-sucedido mesmo quando o WhatsApp
-    // descartava a mensagem, e o histórico registrava um envio que nunca aconteceu.
     if (!sent?.key?.id) {
       console.error(`[SessionManager] WhatsApp did not acknowledge message to ${targetJid} (Tenant: ${establishmentId}).`);
       return false;

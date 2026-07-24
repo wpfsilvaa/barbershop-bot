@@ -84,7 +84,17 @@ export async function sendOrchestratedMessage(establishmentId: string, phone: st
 }
 
 export async function sendManualMessage(establishmentId: string, phone: string, text: string): Promise<string> {
-  const cleanPhone = normalizePhone(phone);
+  let cleanPhone = normalizePhone(phone);
+
+  try {
+    const lidRes = await pool.query(
+      `SELECT phone FROM lid_mappings WHERE lid = $1`,
+      [cleanPhone]
+    );
+    if (lidRes.rows.length > 0 && lidRes.rows[0].phone) {
+      cleanPhone = lidRes.rows[0].phone;
+    }
+  } catch (e) {}
 
   if (!cleanPhone) {
     throw new Error('Telefone de destino inválido.');
