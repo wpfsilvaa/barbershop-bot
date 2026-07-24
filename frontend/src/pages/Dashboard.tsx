@@ -1710,9 +1710,8 @@ export const Dashboard: React.FC = () => {
   useEffect(() => {
     if (!user?.establishment_id) return;
 
-    const wsUrl = window.location.protocol === 'https:'
-      ? `wss://${window.location.host}`
-      : `ws://${window.location.hostname}:5000`;
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws`;
 
     console.log(`[WS] Connecting to WebSocket: ${wsUrl}`);
 
@@ -1730,6 +1729,10 @@ export const Dashboard: React.FC = () => {
       ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
+        if (cancelled) {
+          ws?.close(1000, 'Component unmounted');
+          return;
+        }
         console.log('[WS] Connected to dashboard server.');
         // O servidor autentica pelo JWT: o establishmentId sozinho permitiria
         // que qualquer um escutasse as conversas de outra barbearia.
@@ -1741,6 +1744,7 @@ export const Dashboard: React.FC = () => {
       };
 
       ws.onmessage = (event) => {
+        if (cancelled) return;
         try {
           const data = JSON.parse(event.data);
           if (data.type === 'chat_update') {
@@ -1759,6 +1763,7 @@ export const Dashboard: React.FC = () => {
       };
 
       ws.onerror = (err) => {
+        if (cancelled) return;
         console.error('[WS] Socket encountered error:', err);
         ws?.close();
       };
@@ -1769,7 +1774,17 @@ export const Dashboard: React.FC = () => {
     return () => {
       cancelled = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
-      ws?.close();
+      if (ws) {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.close(1000, 'Component unmounted');
+        } else if (ws.readyState === WebSocket.CONNECTING) {
+          ws.onopen = () => {
+            try { ws?.close(1000, 'Component unmounted'); } catch {}
+          };
+          ws.onerror = () => {};
+          try { ws.close(); } catch {}
+        }
+      }
     };
   }, [user?.establishment_id]);
 

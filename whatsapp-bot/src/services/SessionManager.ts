@@ -185,22 +185,21 @@ export class SessionManager {
 
           console.log(`[SessionManager] Connection closed for ${establishmentId} (Status: ${statusCode}, PrevState: ${currentStatus}).`);
 
-          const isLoggedOutOrPairingFailed = 
-            statusCode === DisconnectReason.loggedOut || 
-            statusCode === 401 || 
-            statusCode === 408 || 
-            currentStatus === 'QR_READY' || 
-            currentStatus === 'CONNECTING';
+          const isRestartRequired = statusCode === DisconnectReason.restartRequired || statusCode === 515;
+          const isLoggedOut = statusCode === DisconnectReason.loggedOut || statusCode === 401;
 
-          if (isLoggedOutOrPairingFailed) {
-            console.log(`[SessionManager] Cleaning stale auth credentials for establishment ${establishmentId}...`);
+          if (isRestartRequired) {
+            console.log(`[SessionManager] QR Code scanned / Restart required for ${establishmentId}. Reconnecting with saved credentials...`);
+            await this.updateSessionStatusDB(establishmentId, 'connecting', null);
+            setTimeout(() => this.connect(establishmentId), 1000);
+          } else if (isLoggedOut) {
+            console.log(`[SessionManager] Logged out for establishment ${establishmentId}. Cleaning credentials...`);
             await this.pool.query('DELETE FROM whatsapp_auth_states WHERE establishment_id = $1', [establishmentId]);
             await this.updateSessionStatusDB(establishmentId, 'disconnected', null, null);
           } else {
             await this.updateSessionStatusDB(establishmentId, 'disconnected', null);
-            // Reconnect automatically only if session was previously fully CONNECTED
-            if (currentStatus === 'CONNECTED') {
-              setTimeout(() => this.connect(establishmentId), 5000);
+            if (currentStatus === 'CONNECTED' || currentStatus === 'QR_READY' || currentStatus === 'CONNECTING') {
+              setTimeout(() => this.connect(establishmentId), 3000);
             }
           }
         } else if (connection === 'open') {
@@ -325,6 +324,33 @@ export class SessionManager {
     await this.releaseSessionLock(establishmentId);
   }
 
+  // O Baileys 7 entrega mensagens endereçadas por LID (`<id>@lid`), não pelo número
+  // de telefone. Como o identificador do LID é só dígitos, o resto do sistema o
+  // tratava como se fosse um telefone e remontava `<lid>@s.whatsapp.net` na hora de
+  // responder — um JID que não existe. O WhatsApp aceitava e descartava em silêncio,
+  // então o bot gravava a resposta no histórico mas nada chegava ao celular.
+  //
+  // O próprio auth store do Baileys guarda o mapeamento (`lid-mapping`), então dá
+  // para distinguir LID de telefone com um dado real em vez de heurística de
+  // tamanho: se existe `<id>_reverse`, o identificador é um LID.
+  private async resolveLidJid(establishmentId: string, digits: string): Promise<string | null> {
+    try {
+      const res = await this.pool.query(
+        `SELECT key_data FROM whatsapp_auth_states
+          WHERE establishment_id = $1 AND key_type = 'lid-mapping' AND key_id = $2`,
+        [establishmentId, `${digits}_reverse`]
+      );
+      if (res.rows.length === 0) return null;
+
+      // Endereçamos pelo próprio LID: é o endereço canônico da sessão de criptografia
+      // no Baileys 7 e nem todo contato tem número de telefone mapeado.
+      return `${digits}@lid`;
+    } catch (err: any) {
+      console.error(`[SessionManager] LID lookup failed for ${digits}:`, err.message);
+      return null;
+    }
+  }
+
   public async sendMessage(establishmentId: string, phone: string, text: string): Promise<boolean> {
     const sock = this.sessions.get(establishmentId);
     if (!sock) {
@@ -333,29 +359,60 @@ export class SessionManager {
     }
 
     let cleanPhone = phone.replace(/\D/g, '');
-    let targetJid = `${cleanPhone}@s.whatsapp.net`;
+    let targetJid: string | null = null;
 
-    try {
-      // Resolve real WhatsApp JID (handles Brazilian 9th digit differences automatically)
-      const results = await sock.onWhatsApp(cleanPhone);
-      if (results && results.length > 0 && results[0].exists) {
-        targetJid = results[0].jid;
-      } else if (cleanPhone.startsWith('55') && cleanPhone.length === 13) {
-        // Try 12-digit variant without 9th digit
-        const altPhone = cleanPhone.substring(0, 4) + cleanPhone.substring(5);
-        const altResults = await sock.onWhatsApp(altPhone);
-        if (altResults && altResults.length > 0 && altResults[0].exists) {
-          targetJid = altResults[0].jid;
-        }
+    // 1. O chamador já passou um JID completo: respeitamos o domínio original
+    //    (`@lid` e `@s.whatsapp.net` não são intercambiáveis). Só aceitamos os dois
+    //    domínios de conversa individual — um `@g.us`/`@broadcast`/`@newsletter` que
+    //    escapasse para a fila viraria disparo em grupo ou lista de transmissão.
+    if (phone.includes('@')) {
+      const normalized = jidNormalizedUser(phone);
+      const domain = normalized.split('@')[1];
+      if (domain === 's.whatsapp.net' || domain === 'lid') {
+        targetJid = normalized;
+      } else {
+        console.error(`[SessionManager] Refusing outbound message to unsupported JID domain '${domain}' (Tenant: ${establishmentId}).`);
+        return false;
       }
-    } catch (err: any) {
-      console.warn(`[SessionManager] onWhatsApp query failed for ${cleanPhone}, falling back to direct JID:`, err.message);
+    }
+
+    // 2. Só dígitos: pode ser um LID disfarçado de telefone.
+    if (!targetJid) {
+      targetJid = await this.resolveLidJid(establishmentId, cleanPhone);
+    }
+
+    // 3. Telefone de verdade: resolve o JID real (cobre o 9º dígito brasileiro).
+    if (!targetJid) {
+      targetJid = `${cleanPhone}@s.whatsapp.net`;
+      try {
+        const results = await sock.onWhatsApp(cleanPhone);
+        if (results && results.length > 0 && results[0].exists) {
+          targetJid = results[0].jid;
+        } else if (cleanPhone.startsWith('55') && cleanPhone.length === 13) {
+          // Try 12-digit variant without 9th digit
+          const altPhone = cleanPhone.substring(0, 4) + cleanPhone.substring(5);
+          const altResults = await sock.onWhatsApp(altPhone);
+          if (altResults && altResults.length > 0 && altResults[0].exists) {
+            targetJid = altResults[0].jid;
+          }
+        }
+      } catch (err: any) {
+        console.warn(`[SessionManager] onWhatsApp query failed for ${cleanPhone}, falling back to direct JID:`, err.message);
+      }
     }
 
     console.log(`[SessionManager] Sending outbound message to ${targetJid} (Tenant: ${establishmentId})...`);
 
     const textWithSignature = `${text}\n\n${BOT_SIGNATURE}`;
-    await sock.sendMessage(targetJid, { text: textWithSignature });
+    const sent = await sock.sendMessage(targetJid, { text: textWithSignature });
+
+    // Sem esta checagem o envio era considerado bem-sucedido mesmo quando o WhatsApp
+    // descartava a mensagem, e o histórico registrava um envio que nunca aconteceu.
+    if (!sent?.key?.id) {
+      console.error(`[SessionManager] WhatsApp did not acknowledge message to ${targetJid} (Tenant: ${establishmentId}).`);
+      return false;
+    }
+
     return true;
   }
 
