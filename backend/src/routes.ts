@@ -603,7 +603,12 @@ router.post(
       
       const formattedMessage = `*[${roleLabel}] ${req.user.name}:*\n${message}`;
 
-      const realJid = await sendManualMessage(String(establishmentId), String(phone), formattedMessage);
+      const realJid = await sendManualMessage(
+        String(establishmentId),
+        String(phone),
+        formattedMessage,
+        { id: req.user.id, name: req.user.name }
+      );
       return res.json({ message: 'Message sent and bot paused.', realJid, formattedMessage });
     } catch (err: any) {
       console.error('Send manual message error:', err);
@@ -640,7 +645,12 @@ router.delete(
             : 'Barbeiro';
         
         const formattedMessage = `*[${roleLabel}] ${req.user.name}:*\n${message.trim()}`;
-        await sendManualMessage(String(establishmentId), String(phone), formattedMessage);
+        await sendManualMessage(
+          String(establishmentId),
+          String(phone),
+          formattedMessage,
+          { id: req.user.id, name: req.user.name }
+        );
       }
 
       terminateChatSession(String(establishmentId), String(phone));

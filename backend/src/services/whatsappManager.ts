@@ -83,7 +83,12 @@ export async function sendOrchestratedMessage(establishmentId: string, phone: st
   }
 }
 
-export async function sendManualMessage(establishmentId: string, phone: string, text: string): Promise<string> {
+export async function sendManualMessage(
+  establishmentId: string,
+  phone: string,
+  text: string,
+  senderUser?: { id: string; name: string }
+): Promise<string> {
   let cleanPhone = normalizePhone(phone);
 
   try {
@@ -110,13 +115,26 @@ export async function sendManualMessage(establishmentId: string, phone: string, 
     isManual: true,
   });
 
-  // 2. Automatically pause bot session to prevent chatbot auto-replies
-  await pool.query(
-    `INSERT INTO whatsapp_chats (establishment_id, phone, bot_state, last_message_time)
-     VALUES ($1, $2, 'PAUSED', NOW())
-     ON CONFLICT (establishment_id, phone) DO UPDATE SET bot_state = 'PAUSED', last_message_time = NOW()`,
-    [establishmentId, cleanPhone]
-  );
+  // 2. Automatically pause bot session AND assign agent to this chat
+  if (senderUser?.id) {
+    await pool.query(
+      `INSERT INTO whatsapp_chats (establishment_id, phone, bot_state, assigned_agent_id, assigned_agent_name, last_message_time)
+       VALUES ($1, $2, 'PAUSED', $3, $4, NOW())
+       ON CONFLICT (establishment_id, phone) DO UPDATE SET 
+         bot_state = 'PAUSED',
+         assigned_agent_id = EXCLUDED.assigned_agent_id,
+         assigned_agent_name = EXCLUDED.assigned_agent_name,
+         last_message_time = NOW()`,
+      [establishmentId, cleanPhone, senderUser.id, senderUser.name]
+    );
+  } else {
+    await pool.query(
+      `INSERT INTO whatsapp_chats (establishment_id, phone, bot_state, last_message_time)
+       VALUES ($1, $2, 'PAUSED', NOW())
+       ON CONFLICT (establishment_id, phone) DO UPDATE SET bot_state = 'PAUSED', last_message_time = NOW()`,
+      [establishmentId, cleanPhone]
+    );
+  }
 
   return formattedJid;
 }
@@ -142,7 +160,7 @@ export async function pauseChatBot(establishmentId: string, phone: string) {
 export async function resumeChatBot(establishmentId: string, phone: string) {
   const cleanPhone = phone.replace(/\D/g, '');
   await pool.query(
-    `UPDATE whatsapp_chats SET bot_state = 'ACTIVE', current_node_id = 'welcome', waiting_for_input = false WHERE establishment_id = $1 AND phone = $2`,
+    `UPDATE whatsapp_chats SET bot_state = 'ACTIVE', current_node_id = 'welcome', waiting_for_input = false, assigned_agent_id = NULL, assigned_agent_name = NULL WHERE establishment_id = $1 AND phone = $2`,
     [establishmentId, cleanPhone]
   );
   try {
@@ -157,7 +175,7 @@ export async function resumeChatBot(establishmentId: string, phone: string) {
 export async function terminateChatSession(establishmentId: string, phone: string) {
   const cleanPhone = phone.replace(/\D/g, '');
   await pool.query(
-    `UPDATE whatsapp_chats SET bot_state = 'IDLE', current_node_id = '', waiting_for_input = false, last_message_time = NOW() WHERE establishment_id = $1 AND phone = $2`,
+    `UPDATE whatsapp_chats SET bot_state = 'IDLE', current_node_id = '', waiting_for_input = false, assigned_agent_id = NULL, assigned_agent_name = NULL, last_message_time = NOW() WHERE establishment_id = $1 AND phone = $2`,
     [establishmentId, cleanPhone]
   );
   await pool.query(
@@ -176,14 +194,14 @@ export async function terminateChatSession(establishmentId: string, phone: strin
 export async function getActiveChats(establishmentId: string) {
   const isAll = establishmentId === 'all';
   const queryText = isAll
-    ? `SELECT w.establishment_id, w.phone, w.push_name, w.bot_state as state, w.last_message_time, c.name as client_name,
+    ? `SELECT w.establishment_id, w.phone, w.push_name, w.bot_state as state, w.assigned_agent_id, w.assigned_agent_name, w.last_message_time, c.name as client_name,
               COALESCE(w.profile_picture_url, c.profile_picture_url) as profile_picture_url,
               e.name as establishment_name
        FROM whatsapp_chats w
        LEFT JOIN clients c ON w.phone = c.phone AND w.establishment_id = c.establishment_id
        LEFT JOIN establishments e ON w.establishment_id = e.id
        ORDER BY w.last_message_time DESC`
-    : `SELECT w.establishment_id, w.phone, w.push_name, w.bot_state as state, w.last_message_time, c.name as client_name,
+    : `SELECT w.establishment_id, w.phone, w.push_name, w.bot_state as state, w.assigned_agent_id, w.assigned_agent_name, w.last_message_time, c.name as client_name,
               COALESCE(w.profile_picture_url, c.profile_picture_url) as profile_picture_url,
               e.name as establishment_name
        FROM whatsapp_chats w
@@ -243,6 +261,8 @@ export async function getActiveChats(establishmentId: string) {
       name: displayName,
       clientPushName: displayName,
       state: row.state,
+      assignedAgentId: row.assigned_agent_id,
+      assignedAgentName: row.assigned_agent_name,
       profilePictureUrl: row.profile_picture_url,
       messages
     });

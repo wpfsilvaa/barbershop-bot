@@ -202,6 +202,8 @@ CREATE TABLE whatsapp_chats (
     push_name VARCHAR(255),
     profile_picture_url TEXT,
     bot_state VARCHAR(20) NOT NULL DEFAULT 'ACTIVE' CHECK (bot_state IN ('IDLE', 'ACTIVE', 'PAUSED')),
+    assigned_agent_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    assigned_agent_name VARCHAR(255),
     current_node_id VARCHAR(100) DEFAULT 'welcome',
     waiting_for_input BOOLEAN DEFAULT FALSE,
     last_message_time TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,

@@ -5181,17 +5181,19 @@ export const Dashboard: React.FC = () => {
                       {activeChats
                         .filter(chat => chatsFilter === 'active' ? chat.state !== 'IDLE' : chat.state === 'IDLE')
                         .map((chat) => {
-                          const isUnanswered = chat.messages && chat.messages.length > 0 && !chat.messages[chat.messages.length - 1].fromMe;
+                          const lastMsg = chat.messages && chat.messages.length > 0 ? chat.messages[chat.messages.length - 1] : null;
+                          const isUnanswered = lastMsg && lastMsg.fromMe === false;
                           const isPaused = chat.state === 'PAUSED';
+                          const isUnassigned = isPaused && !chat.assignedAgentName;
                           const isSelected = selectedChat?.phone === chat.phone;
 
                           let bg = 'rgba(255,255,255,0.02)';
                           let border = '1px solid rgba(255,255,255,0.05)';
 
-                          if (isPaused) {
+                          if (isUnassigned) {
                             bg = isSelected ? 'rgba(245, 158, 11, 0.18)' : 'rgba(245, 158, 11, 0.08)';
                             border = '1px solid #f59e0b';
-                          } else if (isUnanswered) {
+                          } else if (isUnanswered && chat.state !== 'IDLE') {
                             bg = isSelected ? 'rgba(239, 68, 68, 0.15)' : 'rgba(239, 68, 68, 0.06)';
                             border = '1px solid rgba(239, 68, 68, 0.4)';
                           } else if (isSelected) {
@@ -5204,48 +5206,32 @@ export const Dashboard: React.FC = () => {
                               key={chat.phone} 
                               className="chat-item" 
                               style={{
-                                padding: '12px',
-                                borderRadius: '8px',
+                                padding: '12px 14px',
+                                borderRadius: '12px',
                                 background: bg,
                                 border: border,
                                 cursor: 'pointer',
-                                transition: 'all 0.2s ease-in-out',
+                                transition: 'all 0.2s ease',
                                 display: 'flex',
-                                gap: '12px',
-                                alignItems: 'center'
+                                alignItems: 'center',
+                                gap: '12px'
                               }}
                               onClick={() => {
                                 setSelectedChat(chat);
                                 setLocalChatMessages(chat.messages || []);
                               }}
                             >
-                              {/* Avatar do cliente com indicação de aviso */}
-                              <div style={{ position: 'relative', flexShrink: 0 }}>
+                              <div style={{ position: 'relative' }}>
                                 {chat.profilePictureUrl && chat.profilePictureUrl !== 'no-pic' ? (
                                   <img 
                                     src={chat.profilePictureUrl} 
                                     alt={chat.clientPushName} 
-                                    style={{ width: '40px', height: '40px', borderRadius: '50%', objectFit: 'cover', border: isPaused ? '2px solid #f59e0b' : isUnanswered ? '2px solid #ef4444' : '2px solid var(--primary)' }}
+                                    style={{ width: '42px', height: '42px', borderRadius: '50%', objectFit: 'cover', border: '1px solid var(--border)' }}
                                   />
                                 ) : (
-                                  <div style={{ 
-                                    width: '40px', 
-                                    height: '40px', 
-                                    borderRadius: '50%', 
-                                    background: isPaused ? 'linear-gradient(135deg, #f59e0b 0%, #1e1e24 100%)' : isUnanswered ? 'linear-gradient(135deg, #ef4444 0%, #1e1e24 100%)' : 'linear-gradient(135deg, var(--primary) 0%, #1e1e24 100%)', 
-                                    color: '#ffffff', 
-                                    display: 'flex', 
-                                    alignItems: 'center', 
-                                    justifyContent: 'center', 
-                                    fontWeight: 'bold', 
-                                    fontSize: '14px',
-                                    border: isPaused ? '2px solid #f59e0b' : isUnanswered ? '2px solid #ef4444' : '2px solid rgba(212, 175, 55, 0.2)'
-                                  }}>
+                                  <div style={{ width: '42px', height: '42px', borderRadius: '50%', background: 'linear-gradient(135deg, var(--primary), #b38728)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#000', fontWeight: 'bold', fontSize: '15px' }}>
                                     {chat.clientPushName.substring(0, 2).toUpperCase()}
                                   </div>
-                                )}
-                                {isUnanswered && (
-                                  <span style={{ position: 'absolute', top: '-2px', right: '-2px', width: '10px', height: '10px', borderRadius: '50%', background: '#ef4444', border: '2px solid #121212' }} />
                                 )}
                               </div>
 
@@ -5255,13 +5241,17 @@ export const Dashboard: React.FC = () => {
                                     {chat.clientPushName}
                                   </span>
 
-                                  {isPaused ? (
+                                  {isUnassigned ? (
                                     <span style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '4px', fontWeight: 'bold', backgroundColor: '#f59e0b', color: '#000000' }}>
                                       ⚠️ Solicita Atendente
                                     </span>
-                                  ) : isUnanswered ? (
+                                  ) : isUnanswered && chat.state !== 'IDLE' ? (
                                     <span style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '4px', fontWeight: 'bold', backgroundColor: '#ef4444', color: '#ffffff', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                                       <span className="pulse-dot-red" /> Não Respondido
+                                    </span>
+                                  ) : chat.assignedAgentName ? (
+                                    <span style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '4px', fontWeight: '600', backgroundColor: 'rgba(59, 130, 246, 0.15)', color: '#60a5fa', border: '1px solid rgba(59, 130, 246, 0.3)' }}>
+                                      👤 {chat.assignedAgentName}
                                     </span>
                                   ) : (
                                     <span style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '4px', fontWeight: '600', backgroundColor: 'rgba(34, 197, 94, 0.15)', color: '#22c55e', border: '1px solid rgba(34, 197, 94, 0.3)' }}>
