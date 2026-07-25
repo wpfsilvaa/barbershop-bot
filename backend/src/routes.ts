@@ -44,6 +44,7 @@ import {
   pauseChatBot,
   resumeChatBot,
   terminateChatSession,
+  transferChatSession,
   sendManualMessage
 } from './services/whatsappManager';
 
@@ -424,8 +425,18 @@ router.post(
 // dígitos podia colidir entre números distintos. `isSamePhone` normaliza os dois
 // lados e rejeita valores curtos demais (fail-secure).
 async function checkBarberChatAccess(barberId: string, establishmentId: string, targetPhone: string): Promise<boolean> {
-  if (!normalizePhone(targetPhone)) return false;
+  const cleanPhone = normalizePhone(targetPhone);
+  if (!cleanPhone) return false;
 
+  // 1. Check if chat is explicitly assigned/transferred to this barber
+  const assignedCheck = await pool.query(
+    `SELECT phone FROM whatsapp_chats 
+     WHERE establishment_id = $1 AND (phone = $2 OR phone = $3) AND assigned_agent_id = $4`,
+    [establishmentId, targetPhone, cleanPhone, barberId]
+  );
+  if (assignedCheck.rows.length > 0) return true;
+
+  // 2. Otherwise check if client has an appointment today with this barber
   const appointmentsToday = await pool.query(
     `SELECT c.phone
      FROM appointments a
@@ -470,7 +481,9 @@ router.get(
 
         const clientPhones = appointmentsToday.rows.map((row) => row.phone);
 
-        chats = chats.filter((chat) => clientPhones.some((phone) => isSamePhone(chat.phone, phone)));
+        chats = chats.filter((chat) => 
+          chat.assignedAgentId === barberId || clientPhones.some((phone) => isSamePhone(chat.phone, phone))
+        );
       }
 
       return res.json(chats);
@@ -658,6 +671,35 @@ router.delete(
     } catch (err) {
       console.error('Terminate bot chat error:', err);
       return res.status(500).json({ error: 'Internal server error.' });
+    }
+  }
+);
+
+router.post(
+  '/establishments/:establishmentId/bot/chats/:phone/transfer',
+  verifyToken,
+  checkEstablishmentAccess,
+  requireRole(['owner', 'admin', 'barber']),
+  async (req: AuthenticatedRequest, res) => {
+    const { establishmentId, phone } = req.params;
+    const { targetAgentId, targetAgentName } = req.body;
+    if (!req.user) return res.status(401).json({ error: 'Unauthorized.' });
+    if (!targetAgentId || !targetAgentName) {
+      return res.status(400).json({ error: 'targetAgentId and targetAgentName are required.' });
+    }
+
+    try {
+      await transferChatSession(
+        String(establishmentId),
+        String(phone),
+        String(targetAgentId),
+        String(targetAgentName),
+        req.user.name
+      );
+      return res.json({ message: 'Attendance transferred successfully.' });
+    } catch (err: any) {
+      console.error('Transfer chat error:', err);
+      return res.status(500).json({ error: err.message || 'Internal server error.' });
     }
   }
 );

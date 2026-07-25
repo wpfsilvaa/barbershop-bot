@@ -11,8 +11,8 @@ export const listBarbers = async (req: AuthenticatedRequest, res: Response) => {
     const result = await pool.query(
       `SELECT id, name, email, role, is_active, photo_url, created_at 
        FROM users 
-       WHERE establishment_id = $1 AND role = 'barber'
-       ORDER BY name ASC`,
+       WHERE establishment_id = $1 AND role IN ('owner', 'admin', 'barber') AND is_active = true
+       ORDER BY CASE role WHEN 'owner' THEN 1 WHEN 'admin' THEN 2 ELSE 3 END, name ASC`,
       [establishmentId]
     );
 

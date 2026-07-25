@@ -191,6 +191,56 @@ export async function terminateChatSession(establishmentId: string, phone: strin
   } catch (e) {}
 }
 
+export async function transferChatSession(
+  establishmentId: string,
+  phone: string,
+  targetAgentId: string,
+  targetAgentName: string,
+  transferredByAgentName: string
+) {
+  let cleanPhone = normalizePhone(phone);
+  try {
+    const lidRes = await pool.query(`SELECT phone FROM lid_mappings WHERE lid = $1`, [cleanPhone]);
+    if (lidRes.rows.length > 0 && lidRes.rows[0].phone) cleanPhone = lidRes.rows[0].phone;
+  } catch (e) {}
+
+  if (!cleanPhone) throw new Error('Telefone de destino inválido.');
+
+  // 1. Update chat state to PAUSED and assign to target agent
+  await pool.query(
+    `UPDATE whatsapp_chats 
+     SET bot_state = 'PAUSED', 
+         assigned_agent_id = $1, 
+         assigned_agent_name = $2, 
+         last_message_time = NOW() 
+     WHERE establishment_id = $3 AND phone = $4`,
+    [targetAgentId, targetAgentName, establishmentId, cleanPhone]
+  );
+
+  // 2. Build transfer notice message text
+  const transferNoticeText = `🔄 *Atendimento Transferido*\n\nSeu atendimento foi transferido por *${transferredByAgentName}* para o profissional *${targetAgentName}*. Ele dará sequência ao seu atendimento em instantes! 💈`;
+
+  // 3. Queue outbound WhatsApp message
+  await outboundQueue.add('send-whatsapp-message', {
+    establishmentId,
+    phone: cleanPhone,
+    text: transferNoticeText,
+    isManual: false,
+  });
+
+  try {
+    await redisConnection.publish('whatsapp-chat-updates', JSON.stringify({
+      establishmentId,
+      phone: cleanPhone,
+      action: 'transfer',
+      assignedAgentId: targetAgentId,
+      assignedAgentName: targetAgentName,
+      text: transferNoticeText,
+      timestamp: new Date().toISOString()
+    }));
+  } catch (e) {}
+}
+
 export async function getActiveChats(establishmentId: string) {
   const isAll = establishmentId === 'all';
   const queryText = isAll

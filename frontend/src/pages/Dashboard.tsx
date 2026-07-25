@@ -18,6 +18,7 @@ import {
   RefreshCw,
   Search,
   UserPlus,
+  UserCheck,
   Scissors,
   Award,
   CalendarDays,
@@ -157,6 +158,11 @@ export const Dashboard: React.FC = () => {
   const [chatToClosePhone, setChatToClosePhone] = useState<string>('');
   const [closeChatMessageType, setCloseChatMessageType] = useState<'predefined_1' | 'predefined_2' | 'custom' | 'none'>('predefined_1');
   const [closeChatMessageCustomText, setCloseChatMessageCustomText] = useState<string>('');
+
+  // Transfer Chat Modal States
+  const [showTransferModal, setShowTransferModal] = useState<boolean>(false);
+  const [transferBarbers, setTransferBarbers] = useState<{ id: string; name: string }[]>([]);
+  const [selectedTransferBarberId, setSelectedTransferBarberId] = useState<string>('');
 
   // List states
   const [appointments, setAppointments] = useState<any[]>([]);
@@ -1960,6 +1966,47 @@ export const Dashboard: React.FC = () => {
       fetchActiveChats(targetEstId);
     } catch (err: any) {
       showToast(err.message || 'Erro ao encerrar sessão.', 'error');
+    }
+  };
+
+  const handleOpenTransferModal = async () => {
+    if (!selectedChat) return;
+    const targetEstId = selectedChat.establishmentId || user?.establishment_id;
+    if (!targetEstId) return;
+
+    try {
+      const res = await apiRequest(`/establishments/${targetEstId}/barbers`, 'GET');
+      setTransferBarbers(res || []);
+      setSelectedTransferBarberId('');
+      setShowTransferModal(true);
+    } catch (err: any) {
+      showToast('Erro ao carregar lista de profissionais.', 'error');
+    }
+  };
+
+  const handleExecuteTransfer = async () => {
+    if (!selectedChat || !selectedTransferBarberId) {
+      showToast('Selecione um profissional para transferir.', 'error');
+      return;
+    }
+
+    const target = transferBarbers.find(b => b.id === selectedTransferBarberId);
+    if (!target) return;
+
+    try {
+      await apiRequest(
+        `/establishments/${selectedChat.establishmentId}/bot/chats/${selectedChat.phone}/transfer`,
+        'POST',
+        {
+          targetAgentId: target.id,
+          targetAgentName: target.name
+        }
+      );
+      showToast(`Atendimento transferido para ${target.name}!`, 'success');
+      setShowTransferModal(false);
+      fetchActiveChats(selectedChat.establishmentId);
+    } catch (err: any) {
+      showToast(err.message || 'Erro ao transferir atendimento.', 'error');
     }
   };
 
@@ -5383,6 +5430,14 @@ export const Dashboard: React.FC = () => {
                               )}
                               <button 
                                 className="btn-secondary" 
+                                style={{ padding: '8px 12px', fontSize: '13px', color: '#60a5fa', borderColor: 'rgba(96, 165, 250, 0.3)', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                                onClick={handleOpenTransferModal}
+                              >
+                                <UserCheck size={14} />
+                                <span>Transferir</span>
+                              </button>
+                              <button 
+                                className="btn-secondary" 
                                 style={{ padding: '8px 12px', fontSize: '13px', color: 'var(--error)', borderColor: 'rgba(239, 68, 68, 0.2)' }}
                                 onClick={() => handleTerminateChatSession(selectedChat.phone)}
                               >
@@ -8694,6 +8749,56 @@ export const Dashboard: React.FC = () => {
                   </button>
                 </div>
               </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: TRANSFER CHAT */}
+      {showTransferModal && (
+        <div className="modal-backdrop animate-fade-in" style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.75)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
+          <div className="card-premium" style={{ width: '100%', maxWidth: '420px', padding: '24px' }}>
+            <h3 style={{ fontSize: '18px', fontWeight: 'bold', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <UserCheck size={20} style={{ color: 'var(--primary)' }} />
+              Transferir Atendimento
+            </h3>
+            <p style={{ fontSize: '14px', color: 'var(--muted)', marginBottom: '20px' }}>
+              Selecione o profissional da equipe para assumir o atendimento de <strong>{selectedChat?.name || selectedChat?.phone}</strong>:
+            </p>
+
+            <div className="form-group" style={{ marginBottom: '20px' }}>
+              <label className="form-label">Profissional de Destino</label>
+              <select 
+                className="form-input"
+                value={selectedTransferBarberId}
+                onChange={(e) => setSelectedTransferBarberId(e.target.value)}
+                style={{ width: '100%' }}
+              >
+                <option value="">-- Selecione o profissional --</option>
+                {transferBarbers.map((b: any) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name} {b.role === 'owner' ? '👑 (Proprietário)' : b.role === 'admin' ? '🛡️ (Administrador)' : '💈 (Barbeiro)'}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+              <button 
+                type="button"
+                className="btn-secondary" 
+                onClick={() => setShowTransferModal(false)}
+              >
+                Cancelar
+              </button>
+              <button 
+                type="button"
+                className="btn-primary" 
+                onClick={handleExecuteTransfer}
+                disabled={!selectedTransferBarberId}
+              >
+                Confirmar Transferência
+              </button>
             </div>
           </div>
         </div>
