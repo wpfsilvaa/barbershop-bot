@@ -387,10 +387,23 @@ export const ClientBooking: React.FC = () => {
           <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
             
             {/* Carrossel de fotos da barbearia */}
-            {est && est.photos && est.photos.length > 0 && (
+            {(() => {
+              const safePhotos: string[] = (() => {
+                if (!est || !est.photos) return [];
+                if (Array.isArray(est.photos)) return est.photos;
+                if (typeof est.photos === 'string' && (est.photos as string).trim()) {
+                  try {
+                    const parsed = JSON.parse(est.photos);
+                    if (Array.isArray(parsed)) return parsed;
+                  } catch {}
+                }
+                return [];
+              })();
+              if (safePhotos.length === 0) return null;
+              return (
               <div style={{ position: 'relative', width: '100%', marginBottom: '6px' }}>
                 {/* Setas de navegação flutuantes */}
-                {est.photos.length > 3 && (
+                {safePhotos.length > 3 && (
                   <>
                     <button
                       type="button"
@@ -423,7 +436,7 @@ export const ClientBooking: React.FC = () => {
                   }}
                   className="hide-scrollbar"
                 >
-                  {est.photos.map((photo, idx) => (
+                  {safePhotos.map((photo, idx) => (
                     <div 
                       key={idx} 
                       style={{ 
@@ -448,7 +461,7 @@ export const ClientBooking: React.FC = () => {
                   ))}
                 </div>
               </div>
-            )}
+            ); })()}
 
             <h2 style={{ fontSize: '18px', fontWeight: '600' }}>Escolha o Profissional</h2>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>

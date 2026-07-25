@@ -20,12 +20,13 @@ export const apiRequest = async (
   const token = getAuthToken();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    ...customHeaders,
   };
 
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
+
+  Object.assign(headers, customHeaders);
 
   const config: RequestInit = {
     method,

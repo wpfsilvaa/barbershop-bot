@@ -761,7 +761,18 @@ export const Dashboard: React.FC = () => {
           setLogoUrl(est.logo_url || '');
           setShopAddress(est.address || '');
           setShopBio(est.bio || '');
-          setShopPhotos(est.photos || []);
+          let parsedPhotos: string[] = [];
+          if (Array.isArray(est.photos)) {
+            parsedPhotos = est.photos;
+          } else if (typeof est.photos === 'string' && (est.photos as string).trim()) {
+            try {
+              const jsonParsed = JSON.parse(est.photos);
+              if (Array.isArray(jsonParsed)) parsedPhotos = jsonParsed;
+            } catch {
+              parsedPhotos = [];
+            }
+          }
+          setShopPhotos(parsedPhotos);
           
           setMsgWelcome(est.msg_welcome || '');
           setMsgSelectBarber(est.msg_select_barber || '');
@@ -1821,15 +1832,13 @@ export const Dashboard: React.FC = () => {
       cancelled = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (ws) {
-        if (ws.readyState === WebSocket.OPEN) {
+        ws.onopen = null;
+        ws.onclose = null;
+        ws.onerror = null;
+        ws.onmessage = null;
+        try {
           ws.close(1000, 'Component unmounted');
-        } else if (ws.readyState === WebSocket.CONNECTING) {
-          ws.onopen = () => {
-            try { ws?.close(1000, 'Component unmounted'); } catch {}
-          };
-          ws.onerror = () => {};
-          try { ws.close(); } catch {}
-        }
+        } catch {}
       }
     };
   }, [user?.establishment_id]);
@@ -5756,7 +5765,8 @@ export const Dashboard: React.FC = () => {
                           const reader = new FileReader();
                           reader.onloadend = () => {
                             const base64String = reader.result as string;
-                            setShopPhotos([...shopPhotos, base64String]);
+                            const currentPhotos = Array.isArray(shopPhotos) ? shopPhotos : [];
+                            setShopPhotos([...currentPhotos, base64String]);
                             showToast('Imagem carregada com sucesso! Lembre-se de clicar em "Salvar Alterações" no final da página.');
                           };
                           reader.readAsDataURL(file);
@@ -5766,13 +5776,13 @@ export const Dashboard: React.FC = () => {
                     />
                   </div>
 
-                  {shopPhotos.length === 0 ? (
+                  {(!Array.isArray(shopPhotos) || shopPhotos.length === 0) ? (
                     <p style={{ color: 'var(--muted)', fontSize: '13px', fontStyle: 'italic', textAlign: 'center', padding: '20px' }}>
                       Nenhuma imagem cadastrada. Adicione links de imagens acima.
                     </p>
                   ) : (
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '16px', marginTop: '16px' }}>
-                      {shopPhotos.map((photo, index) => (
+                      {(Array.isArray(shopPhotos) ? shopPhotos : []).map((photo, index) => (
                         <div key={index} style={{ position: 'relative', borderRadius: '8px', overflow: 'hidden', height: '100px', border: '1px solid rgba(255,255,255,0.08)' }}>
                           <img 
                             src={photo} 
@@ -5786,7 +5796,8 @@ export const Dashboard: React.FC = () => {
                             type="button"
                             style={{ position: 'absolute', top: '4px', right: '4px', background: 'rgba(239, 68, 68, 0.9)', color: '#ffffff', border: 'none', borderRadius: '4px', padding: '4px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                             onClick={() => {
-                              const updatedPhotos = shopPhotos.filter((_, idx) => idx !== index);
+                              const currentPhotos = Array.isArray(shopPhotos) ? shopPhotos : [];
+                              const updatedPhotos = currentPhotos.filter((_, idx) => idx !== index);
                               setShopPhotos(updatedPhotos);
                               showToast('Foto removida. Lembre-se de salvar as alterações.');
                             }}

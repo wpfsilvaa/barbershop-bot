@@ -102,7 +102,7 @@ export const updateEstablishment = async (req: AuthenticatedRequest, res: Respon
            logo_url = COALESCE($16, logo_url),
            address = COALESCE($17, address),
            bio = COALESCE($18, bio),
-           photos = COALESCE($19, photos),
+           photos = COALESCE($19::jsonb, photos),
            bot_active = COALESCE($20, bot_active)
        WHERE id = $21
        RETURNING id, name, slug, primary_color, secondary_color, background_color, text_color, 
@@ -127,7 +127,7 @@ export const updateEstablishment = async (req: AuthenticatedRequest, res: Respon
         logo_url === undefined ? null : logo_url,
         address === undefined ? null : address,
         bio === undefined ? null : bio,
-        photos === undefined || !photos ? null : photos,
+        photos === undefined || photos === null ? null : (typeof photos === 'string' ? photos : JSON.stringify(photos)),
         bot_active === undefined || bot_active === null ? null : bot_active,
         establishmentId
       ]

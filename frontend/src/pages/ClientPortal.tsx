@@ -107,9 +107,11 @@ export const ClientPortal: React.FC = () => {
   const [loadingData, setLoadingData] = useState(false);
 
   const fetchLoyaltyData = async (userPhone: string) => {
-    if (!userPhone) return;
+    if (!userPhone || !token) return;
     try {
-      const data = await apiRequest(`/client-portal/loyalty/${userPhone}`, 'GET');
+      const data = await apiRequest(`/client-portal/loyalty/${userPhone}`, 'GET', undefined, {
+        'Authorization': `Bearer ${token}`
+      });
       setLoyaltyData(data);
     } catch (err: any) {
       console.error('Fetch loyalty error:', err);
@@ -1110,11 +1112,22 @@ export const ClientPortal: React.FC = () => {
 
             {selectedEst && (() => {
               const estObj = establishments.find(e => e.id === selectedEst);
-              if (!estObj || !estObj.photos || estObj.photos.length === 0) return null;
+              if (!estObj || !estObj.photos) return null;
+              const safePhotos: string[] = (() => {
+                if (Array.isArray(estObj.photos)) return estObj.photos;
+                if (typeof estObj.photos === 'string' && (estObj.photos as string).trim()) {
+                  try {
+                    const parsed = JSON.parse(estObj.photos);
+                    if (Array.isArray(parsed)) return parsed;
+                  } catch {}
+                }
+                return [];
+              })();
+              if (safePhotos.length === 0) return null;
               return (
                 <div style={{ position: 'relative', width: '100%', marginBottom: '10px' }}>
                   {/* Setas de navegação flutuantes */}
-                  {estObj.photos.length > 3 && (
+                  {safePhotos.length > 3 && (
                     <>
                       <button
                         type="button"
@@ -1147,7 +1160,7 @@ export const ClientPortal: React.FC = () => {
                     }}
                     className="hide-scrollbar"
                   >
-                    {estObj.photos.map((photo, idx) => (
+                    {safePhotos.map((photo, idx) => (
                       <div 
                         key={idx} 
                         style={{ 
