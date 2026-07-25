@@ -121,11 +121,11 @@ async function checkAndSendLicenseReminders() {
 }
 
 async function cleanExpiredChatHistory() {
-  console.log('⏰ Running daily cleanup for chat history older than 30 days...');
+  console.log('⏰ Running daily cleanup routine for chat history older than 3 months (90 days)...');
   try {
-    const resMsgs = await pool.query("DELETE FROM whatsapp_messages WHERE created_at < NOW() - INTERVAL '30 days'");
-    const resChats = await pool.query("DELETE FROM whatsapp_chats WHERE last_message_time < NOW() - INTERVAL '30 days'");
-    console.log(`[DatabaseCleanup] Deleted ${resMsgs.rowCount || 0} expired messages and ${resChats.rowCount || 0} expired chat sessions.`);
+    const resMsgs = await pool.query("DELETE FROM whatsapp_messages WHERE created_at < NOW() - INTERVAL '90 days'");
+    const resChats = await pool.query("DELETE FROM whatsapp_chats WHERE bot_state = 'IDLE' AND last_message_time < NOW() - INTERVAL '90 days'");
+    console.log(`[DatabaseCleanup] Retained latest active conversations. Deleted ${resMsgs.rowCount || 0} expired messages and ${resChats.rowCount || 0} closed chat sessions older than 90 days.`);
   } catch (err) {
     console.error('[DatabaseCleanup] Failed to cleanup expired chat history:', err);
   }

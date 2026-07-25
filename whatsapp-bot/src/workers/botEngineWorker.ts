@@ -208,6 +208,20 @@ export const botWorker = new Worker<InboundJobData>(
         return;
       }
 
+      // Global keyword check for human support request
+      const inputLower = text.trim().toLowerCase();
+      if (inputLower === 'atendente' || inputLower === 'suporte' || inputLower.includes('falar com atendente') || inputLower.includes('atendimento humano')) {
+        session.state = 'PAUSED';
+        session.waitingForInput = false;
+        await saveSession(establishmentId, phone, session);
+        await outboundQueue.add('send-whatsapp-message', {
+          establishmentId,
+          phone,
+          text: '🙋‍♂️ *Atendimento Humano Solicitado!*\n\nUm de nossos atendentes foi notificado e atenderá você em breve por aqui. Por favor, aguarde só um instante! 💈',
+        });
+        return;
+      }
+
       // Check if client exists (locally or globally, checking phone or via lid_mappings)
       let resolvedPhone = phone;
       try {
@@ -336,10 +350,12 @@ export const botWorker = new Worker<InboundJobData>(
         session.state = 'ACTIVE';
         session.waitingForInput = true;
 
-        let menuText = `Olá, *${clientInfo.name}*! Seja bem-vindo! 💈✂️\n\n*Escolha com qual profissional você deseja agendar:*\n\n`;
+        let menuText = `Olá, *${clientInfo.name}*! Seja bem-vindo! 💈✂️\n\n*Como podemos te ajudar hoje?*\n\n`;
         barbersRes.rows.forEach((b, idx) => {
-          menuText += `${idx + 1}️⃣ *${b.name}*\n`;
+          menuText += `${idx + 1}️⃣ *Agendar com ${b.name}*\n`;
         });
+        const supportOptionIdx = barbersRes.rows.length + 1;
+        menuText += `${supportOptionIdx}️⃣ 💬 *Falar com Atendente*\n`;
         menuText += `\n👉 *Digite apenas o número correspondente:*`;
 
         await outboundQueue.add('send-whatsapp-message', {
@@ -353,12 +369,27 @@ export const botWorker = new Worker<InboundJobData>(
 
       // 3. Process Barber Choice & Show Services Menu
       if (session.currentNodeId === 'process_barber_selection') {
-        const choiceIdx = parseInt(text.trim(), 10) - 1;
+        const choiceNumber = parseInt(text.trim(), 10);
+        const supportOptionIdx = (session.barbersList?.length || 0) + 1;
+
+        if (choiceNumber === supportOptionIdx) {
+          session.state = 'PAUSED';
+          session.waitingForInput = false;
+          await saveSession(establishmentId, phone, session);
+          await outboundQueue.add('send-whatsapp-message', {
+            establishmentId,
+            phone,
+            text: '🙋‍♂️ *Atendimento Humano Solicitado!*\n\nUm de nossos atendentes foi notificado e atenderá você em breve por aqui. Por favor, aguarde só um instante! 💈',
+          });
+          return;
+        }
+
+        const choiceIdx = choiceNumber - 1;
         if (isNaN(choiceIdx) || choiceIdx < 0 || !session.barbersList || choiceIdx >= session.barbersList.length) {
           await outboundQueue.add('send-whatsapp-message', {
             establishmentId,
             phone,
-            text: '⚠️ Opção inválida. Por favor, digite o *número* correspondente ao profissional desejado:',
+            text: '⚠️ Opção inválida. Por favor, digite o *número* correspondente à opção desejada:',
           });
           return;
         }

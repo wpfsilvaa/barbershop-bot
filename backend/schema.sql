@@ -219,12 +219,16 @@ CREATE TABLE whatsapp_messages (
     phone VARCHAR(50) NOT NULL,
     message_text TEXT,
     from_me BOOLEAN NOT NULL DEFAULT FALSE,
+    is_archived BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Suporta tanto a listagem por conversa quanto a limpeza diária por data.
 CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_chat
 ON whatsapp_messages (establishment_id, phone, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_archived
+ON whatsapp_messages (establishment_id, phone, is_archived);
 
 CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_created_at
 ON whatsapp_messages (created_at);

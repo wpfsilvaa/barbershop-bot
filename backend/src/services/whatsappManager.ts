@@ -157,7 +157,11 @@ export async function resumeChatBot(establishmentId: string, phone: string) {
 export async function terminateChatSession(establishmentId: string, phone: string) {
   const cleanPhone = phone.replace(/\D/g, '');
   await pool.query(
-    `UPDATE whatsapp_chats SET bot_state = 'IDLE', current_node_id = '', waiting_for_input = false WHERE establishment_id = $1 AND phone = $2`,
+    `UPDATE whatsapp_chats SET bot_state = 'IDLE', current_node_id = '', waiting_for_input = false, last_message_time = NOW() WHERE establishment_id = $1 AND phone = $2`,
+    [establishmentId, cleanPhone]
+  );
+  await pool.query(
+    `UPDATE whatsapp_messages SET is_archived = true WHERE establishment_id = $1 AND phone = $2 AND is_archived = false`,
     [establishmentId, cleanPhone]
   );
   try {
@@ -192,20 +196,20 @@ export async function getActiveChats(establishmentId: string) {
 
   if (chatsRes.rows.length === 0) return [];
 
-  // Antes havia uma query de mensagens por conversa (N+1). O painel recarrega esta
-  // lista a cada evento do WebSocket, então com algumas dezenas de conversas ativas
-  // isso virava uma enxurrada de queries a cada mensagem recebida. Agora buscamos
-  // as últimas 50 mensagens de todas as conversas em uma única query com window
-  // function e agrupamos em memória.
   const chatKeys = chatsRes.rows.map((r) => `${r.establishment_id}|${r.phone}`);
 
   const messagesRes = await pool.query(
-    `SELECT establishment_id, phone, message_text AS text, from_me AS "fromMe", created_at
+    `SELECT establishment_id, phone, message_text AS text, from_me AS "fromMe", created_at, is_archived
      FROM (
        SELECT m.*,
               ROW_NUMBER() OVER (PARTITION BY m.establishment_id, m.phone ORDER BY m.id DESC) AS rn
        FROM whatsapp_messages m
+       JOIN whatsapp_chats w ON m.establishment_id = w.establishment_id AND m.phone = w.phone
        WHERE (m.establishment_id::text || '|' || m.phone) = ANY($1)
+         AND (
+           (w.bot_state = 'IDLE' AND m.is_archived = true) OR
+           (w.bot_state != 'IDLE' AND m.is_archived = false)
+         )
      ) ranked
      WHERE rn <= 50
      ORDER BY establishment_id, phone, created_at ASC, id ASC`,
