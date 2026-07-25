@@ -15,6 +15,14 @@ import { redisConnection } from '../config/redis';
 
 async function recordOutboundChatMessage(establishmentId: string, phone: string, text: string) {
   let cleanPhone = phone.split('@')[0].replace(/\D/g, '');
+  if (!cleanPhone.startsWith('55') || cleanPhone.length >= 13) {
+    try {
+      const lidRes = await pool.query(`SELECT phone FROM lid_mappings WHERE lid = $1`, [cleanPhone]);
+      if (lidRes.rows.length > 0 && lidRes.rows[0].phone) {
+        cleanPhone = lidRes.rows[0].phone.replace(/\D/g, '');
+      }
+    } catch (e) {}
+  }
   if (cleanPhone.startsWith('55') && cleanPhone.length === 12) {
     cleanPhone = cleanPhone.substring(0, 4) + '9' + cleanPhone.substring(4);
   }

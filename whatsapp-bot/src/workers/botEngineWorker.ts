@@ -43,8 +43,45 @@ interface BotSession {
 
 const botSessionsCache = new Map<string, BotSession>();
 
+function sanitizeName(input: string): string {
+  if (!input) return '';
+  return input
+    .replace(/[\x00-\x1F\x7F-\x9F]/g, '')  // Remove control characters
+    .replace(/<[^>]*>/g, '')               // Strip HTML tags (XSS protection)
+    .replace(/[^\p{L}\p{M}\s\-\.']/gu, '')  // Allow only letters, accents, spaces, hyphens, dots, apostrophes
+    .replace(/\s+/g, ' ')                   // Collapse whitespace
+    .trim()
+    .substring(0, 60);                      // Limit max length to 60 characters
+}
+
+async function resolveCanonicalPhoneForWorker(phone: string): Promise<string> {
+  let clean = phone.split('@')[0].replace(/\D/g, '');
+  
+  if (!clean.startsWith('55') || clean.length >= 13) {
+    try {
+      const lidRes = await pool.query(
+        `SELECT phone FROM lid_mappings WHERE lid = $1`,
+        [clean]
+      );
+      if (lidRes.rows.length > 0 && lidRes.rows[0].phone) {
+        let mapped = lidRes.rows[0].phone.replace(/\D/g, '');
+        if (mapped.startsWith('55') && mapped.length === 12) {
+          mapped = mapped.substring(0, 4) + '9' + mapped.substring(4);
+        }
+        return mapped;
+      }
+    } catch (e) {}
+  }
+
+  if (clean.startsWith('55') && clean.length === 12) {
+    clean = clean.substring(0, 4) + '9' + clean.substring(4);
+  }
+
+  return clean;
+}
+
 async function getOrLoadSession(establishmentId: string, phone: string): Promise<BotSession> {
-  const cleanPhone = phone.split('@')[0];
+  const cleanPhone = await resolveCanonicalPhoneForWorker(phone);
   const cacheKey = `${establishmentId}:${cleanPhone}`;
   let cached = botSessionsCache.get(cacheKey);
 
@@ -90,7 +127,7 @@ async function getOrLoadSession(establishmentId: string, phone: string): Promise
 }
 
 async function saveSession(establishmentId: string, phone: string, session: BotSession) {
-  const cleanPhone = phone.split('@')[0];
+  const cleanPhone = await resolveCanonicalPhoneForWorker(phone);
   const cacheKey = `${establishmentId}:${cleanPhone}`;
   botSessionsCache.set(cacheKey, session);
   await pool.query(
@@ -115,7 +152,7 @@ async function saveSession(establishmentId: string, phone: string, session: BotS
 }
 
 async function recordChatMessage(establishmentId: string, phone: string, text: string, fromMe: boolean) {
-  const cleanPhone = phone.split('@')[0];
+  const cleanPhone = await resolveCanonicalPhoneForWorker(phone);
   await pool.query(
     `INSERT INTO whatsapp_messages (establishment_id, phone, message_text, from_me, created_at)
      VALUES ($1, $2, $3, $4, NOW())`,
@@ -160,46 +197,59 @@ export const botWorker = new Worker<InboundJobData>(
         return;
       }
 
-      // Check if client exists (locally or globally)
+      // Check if client exists (locally or globally, checking phone or via lid_mappings)
+      let resolvedPhone = phone;
+      try {
+        const lidCheck = await pool.query(`SELECT phone FROM lid_mappings WHERE lid = $1`, [phone]);
+        if (lidCheck.rows.length > 0 && lidCheck.rows[0].phone) {
+          resolvedPhone = lidCheck.rows[0].phone;
+        }
+      } catch (e) {}
+
       let clientCheck = await pool.query(
-        'SELECT id, name FROM clients WHERE phone = $1 AND establishment_id = $2',
-        [phone, establishmentId]
+        `SELECT id, name FROM clients 
+         WHERE (phone = $1 OR phone = $2) AND (establishment_id = $3 OR establishment_id IS NULL)
+         ORDER BY establishment_id DESC NULLS LAST LIMIT 1`,
+        [phone, resolvedPhone, establishmentId]
       );
 
-      if (clientCheck.rows.length === 0) {
-        const globalClientCheck = await pool.query(
-          'SELECT id, name FROM clients WHERE phone = $1 AND establishment_id IS NULL LIMIT 1',
-          [phone]
+      if (clientCheck.rows.length > 0 && clientCheck.rows[0].id) {
+        await pool.query(
+          `UPDATE clients SET establishment_id = $1 WHERE id = $2 AND establishment_id IS NULL`,
+          [establishmentId, clientCheck.rows[0].id]
         );
-        if (globalClientCheck.rows.length > 0) {
-          const globalClient = globalClientCheck.rows[0];
-          await pool.query(
-            'UPDATE clients SET establishment_id = $1 WHERE id = $2',
-            [establishmentId, globalClient.id]
-          );
-          clientCheck = globalClientCheck;
-        }
       }
 
       // 1. Client Registration Step
       if (session.currentNodeId === 'register_client') {
-        const clientName = text.trim();
+        const clientName = sanitizeName(text);
         if (clientName.length < 3) {
           await outboundQueue.add('send-whatsapp-message', {
             establishmentId,
             phone,
-            text: '⚠️ O nome precisa ter pelo menos 3 caracteres. Por favor, digite seu nome completo:',
+            text: '⚠️ Por favor, digite um nome válido (mínimo de 3 caracteres, sem símbolos ou códigos):',
           });
           return;
         }
+
+        const targetPhone = resolvedPhone || phone;
 
         await pool.query(
           `INSERT INTO clients (establishment_id, name, phone)
            VALUES ($1, $2, $3)
            ON CONFLICT (establishment_id, phone) 
            DO UPDATE SET name = EXCLUDED.name`,
-          [establishmentId, clientName, phone]
+          [establishmentId, clientName, targetPhone]
         );
+
+        if (phone !== targetPhone && phone.length >= 13) {
+          await pool.query(
+            `INSERT INTO lid_mappings (lid, phone, updated_at)
+             VALUES ($1, $2, NOW())
+             ON CONFLICT (lid) DO UPDATE SET phone = EXCLUDED.phone, updated_at = NOW()`,
+            [phone, targetPhone]
+          );
+        }
 
         await outboundQueue.add('send-whatsapp-message', {
           establishmentId,

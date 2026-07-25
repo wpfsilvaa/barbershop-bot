@@ -339,6 +339,22 @@ export class SessionManager {
     const isLid = remoteJid.endsWith('@lid') || (!digits.startsWith('55') && digits.length >= 13);
 
     if (isLid) {
+      // 1. Check lid_mappings table FIRST
+      try {
+        const globalRes = await this.pool.query(
+          `SELECT phone FROM lid_mappings WHERE lid = $1`,
+          [digits]
+        );
+        if (globalRes.rows.length > 0 && globalRes.rows[0].phone) {
+          let mappedPhone = globalRes.rows[0].phone.replace(/\D/g, '');
+          if (mappedPhone.startsWith('55') && mappedPhone.length === 12) {
+            mappedPhone = mappedPhone.substring(0, 4) + '9' + mappedPhone.substring(4);
+          }
+          return mappedPhone;
+        }
+      } catch (err) {}
+
+      // 2. Check whatsapp_auth_states table
       try {
         const res = await this.pool.query(
           `SELECT key_data FROM whatsapp_auth_states
@@ -349,22 +365,19 @@ export class SessionManager {
           let realPhone = res.rows[0].key_data;
           if (typeof realPhone === 'string') realPhone = realPhone.replace(/"/g, '');
           if (realPhone) {
-            digits = realPhone.replace(/\D/g, '');
+            let cleanReal = realPhone.replace(/\D/g, '');
+            if (cleanReal.startsWith('55') && cleanReal.length === 12) {
+              cleanReal = cleanReal.substring(0, 4) + '9' + cleanReal.substring(4);
+            }
+            await this.pool.query(
+              `INSERT INTO lid_mappings (lid, phone, updated_at) VALUES ($1, $2, NOW())
+               ON CONFLICT (lid) DO UPDATE SET phone = EXCLUDED.phone, updated_at = NOW()`,
+              [digits, cleanReal]
+            );
+            return cleanReal;
           }
         }
       } catch (err) {}
-
-      if (!digits.startsWith('55')) {
-        try {
-          const globalRes = await this.pool.query(
-            `SELECT phone FROM lid_mappings WHERE lid = $1`,
-            [digits]
-          );
-          if (globalRes.rows.length > 0 && globalRes.rows[0].phone) {
-            digits = globalRes.rows[0].phone.replace(/\D/g, '');
-          }
-        } catch (err) {}
-      }
     }
 
     if (digits.startsWith('55') && digits.length === 12) {
@@ -418,13 +431,47 @@ export class SessionManager {
       variations.push(cleanPhone.substring(0, 4) + '9' + cleanPhone.substring(4));
     }
 
+    // 1. Check lid_mappings table FIRST for mapped LID JID
+    if (!targetJid) {
+      try {
+        const lidMapRes = await this.pool.query(
+          `SELECT lid FROM lid_mappings WHERE phone = ANY($1) OR lid = $2 LIMIT 1`,
+          [variations, cleanPhone]
+        );
+        if (lidMapRes.rows.length > 0 && lidMapRes.rows[0].lid) {
+          targetJid = `${lidMapRes.rows[0].lid}@lid`;
+          console.log(`[SessionManager] Found mapped LID JID for ${cleanPhone}: ${targetJid}`);
+        }
+      } catch (err) {}
+    }
+
+    // 2. Check whatsapp_auth_states table
+    if (!targetJid) {
+      try {
+        const lidRes = await this.pool.query(
+          `SELECT key_data FROM whatsapp_auth_states
+           WHERE establishment_id = $1 AND key_type = 'lid-mapping' AND key_id = ANY($2)`,
+          [establishmentId, variations]
+        );
+        if (lidRes.rows.length > 0) {
+          let lidVal = lidRes.rows[0].key_data;
+          if (typeof lidVal === 'string') lidVal = lidVal.replace(/"/g, '');
+          if (lidVal) {
+            targetJid = `${lidVal}@lid`;
+            console.log(`[SessionManager] Found auth_states LID JID for ${cleanPhone}: ${targetJid}`);
+          }
+        }
+      } catch (err) {}
+    }
+
+    // 3. Direct 13-digit Brazilian phone JID
     if (!targetJid) {
       if (cleanPhone.startsWith('55') && cleanPhone.length === 13) {
         targetJid = `${cleanPhone}@s.whatsapp.net`;
       }
     }
 
-    // 1. Query official WhatsApp server via sock.onWhatsApp FIRST for other numbers or LIDs
+    // 4. Query official WhatsApp server via sock.onWhatsApp FIRST for other numbers
     if (!targetJid) {
       for (const variant of variations) {
         try {
@@ -438,24 +485,6 @@ export class SessionManager {
           console.warn(`[SessionManager] onWhatsApp query failed for ${variant}:`, err.message);
         }
       }
-    }
-
-    // 2. Fallback: check lid-mapping table in whatsapp_auth_states
-    if (!targetJid) {
-      try {
-        const lidRes = await this.pool.query(
-          `SELECT key_data FROM whatsapp_auth_states
-           WHERE establishment_id = $1 AND key_type = 'lid-mapping' AND key_id = ANY($2)`,
-          [establishmentId, variations]
-        );
-        if (lidRes.rows.length > 0) {
-          let lidVal = lidRes.rows[0].key_data;
-          if (typeof lidVal === 'string') lidVal = lidVal.replace(/"/g, '');
-          if (lidVal) {
-            targetJid = `${lidVal}@lid`;
-          }
-        }
-      } catch (err) {}
     }
 
     // 3. Fallback: check global lid_mappings table

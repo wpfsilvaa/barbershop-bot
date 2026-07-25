@@ -93,6 +93,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    volumes:
+      - ./whatsapp-bot:/app
+      - /app/node_modules
 
   frontend:
     build:

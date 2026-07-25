@@ -218,6 +218,13 @@ export const Dashboard: React.FC = () => {
   const [rescheduleReason, setRescheduleReason] = useState('');
   const [rescheduleSlots, setRescheduleSlots] = useState<string[]>([]);
 
+  // Form states - New Chat / Contacts Modal
+  const [showNewChatModal, setShowNewChatModal] = useState(false);
+  const [newChatSearch, setNewChatSearch] = useState('');
+  const [newChatName, setNewChatName] = useState('');
+  const [newChatPhone, setNewChatPhone] = useState('');
+  const [newChatDdi, setNewChatDdi] = useState('55');
+
   // Super Admin States
   const [superUsers, setSuperUsers] = useState<any[]>([]);
   const [superSessions, setSuperSessions] = useState<any[]>([]);
@@ -1695,6 +1702,19 @@ export const Dashboard: React.FC = () => {
     chatMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [localChatMessages]);
 
+  const isSamePhone = (phoneA?: string | null, phoneB?: string | null): boolean => {
+    if (!phoneA || !phoneB) return false;
+    const digitsA = phoneA.replace(/\D/g, '');
+    const digitsB = phoneB.replace(/\D/g, '');
+    if (digitsA === digitsB) return true;
+    if (digitsA.startsWith('55') && digitsB.startsWith('55')) {
+      const subA = digitsA.slice(-8);
+      const subB = digitsB.slice(-8);
+      return subA.length === 8 && subA === subB;
+    }
+    return false;
+  };
+
   // Bot Active Chats Management Handlers
   const fetchActiveChats = async (customEstId?: string) => {
     const targetEstId = customEstId || user?.establishment_id || (user?.role === 'admin' ? 'all' : null);
@@ -1705,7 +1725,10 @@ export const Dashboard: React.FC = () => {
       setActiveChats(data);
       const currentSelected = selectedChatRef.current;
       if (currentSelected) {
-        const updated = data.find((c: any) => c.phone === currentSelected.phone || (c.rawJid && c.rawJid === currentSelected.phone));
+        const updated = data.find((c: any) => 
+          c.phone === currentSelected.phone || 
+          isSamePhone(c.phone, currentSelected.phone)
+        );
         if (updated) {
           setSelectedChat(updated);
           setLocalChatMessages(updated.messages || []);
@@ -1809,6 +1832,62 @@ export const Dashboard: React.FC = () => {
     }
   }, [user?.establishment_id, activeTab]);
 
+  const handleStartChatWithContact = async (client: { name: string; phone: string }) => {
+    if (!user?.establishment_id) return;
+    let cleanPhone = client.phone.replace(/\D/g, '');
+    if (cleanPhone.startsWith('55') && cleanPhone.length === 12) {
+      cleanPhone = cleanPhone.substring(0, 4) + '9' + cleanPhone.substring(4);
+    }
+
+    try {
+      await apiRequest(`/establishments/${user.establishment_id}/bot/chats/${cleanPhone}/pause`, 'POST');
+    } catch (e) {}
+
+    const existing = activeChats.find(c => c.phone === cleanPhone || c.phone === client.phone);
+    if (existing) {
+      setSelectedChat(existing);
+      setLocalChatMessages(existing.messages || []);
+    } else {
+      const newChatObj = {
+        establishmentId: user.establishment_id,
+        establishmentName: 'Barbearia',
+        phone: cleanPhone,
+        name: client.name,
+        clientPushName: client.name,
+        state: 'PAUSED',
+        profilePictureUrl: null,
+        messages: []
+      };
+      setActiveChats(prev => [newChatObj, ...prev]);
+      setSelectedChat(newChatObj);
+      setLocalChatMessages([]);
+    }
+
+    setShowNewChatModal(false);
+    showToast(`Conversa iniciada com ${client.name}!`);
+  };
+
+  const handleStartCustomChat = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user?.establishment_id) return;
+
+    let cleanNum = newChatPhone.replace(/\D/g, '');
+    if (cleanNum.startsWith('55') && (cleanNum.length === 12 || cleanNum.length === 13)) {
+      cleanNum = cleanNum.substring(2);
+    }
+    if (cleanNum.length < 10 || cleanNum.length > 11) {
+      showToast('O telefone deve conter DDD + número (10 ou 11 dígitos).', 'error');
+      return;
+    }
+
+    const fullPhone = `${newChatDdi}${cleanNum}`;
+    const nameToUse = newChatName.trim() || 'Cliente';
+
+    await handleStartChatWithContact({ name: nameToUse, phone: fullPhone });
+    setNewChatName('');
+    setNewChatPhone('');
+  };
+
   const handlePauseChatBot = async (phone: string) => {
     const targetEstId = selectedChat?.establishmentId || user?.establishment_id || (user?.role === 'admin' ? 'all' : null);
     if (!targetEstId) return;
@@ -1911,10 +1990,40 @@ export const Dashboard: React.FC = () => {
       });
       showToast('Mensagem enviada!', 'success');
       
-      if (response && response.realJid && response.realJid !== selectedChat.phone) {
-        setSelectedChat((prev: any) => prev ? { ...prev, phone: response.realJid, state: 'PAUSED' } : null);
-      }
-      
+      const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const newMsg = {
+        text: response?.formattedMessage || messageText,
+        fromMe: true,
+        time: nowTime
+      };
+
+      setLocalChatMessages((prev) => [...prev, newMsg]);
+
+      setSelectedChat((prev: any) => {
+        if (!prev) return null;
+        const targetPhone = (response && response.realJid) ? response.realJid : prev.phone;
+        const existingMsgs = prev.messages || [];
+        return {
+          ...prev,
+          phone: targetPhone,
+          state: 'PAUSED',
+          messages: [...existingMsgs, newMsg]
+        };
+      });
+
+      setActiveChats((prevChats) =>
+        prevChats.map((chat) => {
+          if (chat.phone === selectedChat.phone || (response && response.realJid && chat.phone === response.realJid)) {
+            return {
+              ...chat,
+              state: 'PAUSED',
+              messages: [...(chat.messages || []), newMsg]
+            };
+          }
+          return chat;
+        })
+      );
+
       await fetchActiveChats(targetEstId);
     } catch (err: any) {
       showToast(err.message || 'Erro ao enviar mensagem.', 'error');
@@ -1943,10 +2052,63 @@ export const Dashboard: React.FC = () => {
         if (data.type !== 'connected') {
           console.log('[SSE] Live chat event received:', data);
 
-          // Toca o alerta apenas em mensagem recebida do cliente — não no eco das
-          // mensagens enviadas pelo próprio painel nem em mudanças de estado do bot.
           if (data.text && data.fromMe === false) {
             playNotificationSoundRef.current();
+          }
+
+          const currentSel = selectedChatRef.current;
+          if (data.text && currentSel && (currentSel.phone === data.phone || isSamePhone(currentSel.phone, data.phone))) {
+            const incomingMsg = {
+              text: data.text,
+              fromMe: !!data.fromMe,
+              time: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+            };
+            setLocalChatMessages((prev) => {
+              if (prev.some(m => m.text === incomingMsg.text && m.fromMe === incomingMsg.fromMe)) {
+                return prev;
+              }
+              return [...prev, incomingMsg];
+            });
+          }
+
+          if (data.phone && data.text) {
+            setActiveChats((prevChats) => {
+              let found = false;
+              const next = prevChats.map((chat) => {
+                if (chat.phone === data.phone || isSamePhone(chat.phone, data.phone)) {
+                  found = true;
+                  const newMsgObj = {
+                    text: data.text,
+                    fromMe: !!data.fromMe,
+                    time: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+                  };
+                  return {
+                    ...chat,
+                    last_message_time: new Date().toISOString(),
+                    messages: [...(chat.messages || []), newMsgObj]
+                  };
+                }
+                return chat;
+              });
+
+              if (!found) {
+                const newChatObj = {
+                  establishmentId: data.establishmentId,
+                  phone: data.phone,
+                  name: data.pushName || 'Cliente',
+                  clientPushName: data.pushName || 'Cliente',
+                  state: 'ACTIVE',
+                  profilePictureUrl: null,
+                  messages: [{
+                    text: data.text,
+                    fromMe: !!data.fromMe,
+                    time: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+                  }]
+                };
+                return [newChatObj, ...next];
+              }
+              return next;
+            });
           }
 
           fetchActiveChats(targetEstId);
@@ -4979,6 +5141,21 @@ export const Dashboard: React.FC = () => {
               <div className={`dashboard-chats-split-container ${selectedChat ? 'chat-selected' : ''}`}>
                 {/* Left Side: Chats List */}
                 <div className="card-premium dashboard-chats-sidebar">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                    <span style={{ fontSize: '15px', fontWeight: 'bold', color: 'var(--foreground)' }}>Conversas</span>
+                    <button 
+                      className="btn-primary" 
+                      style={{ padding: '6px 10px', fontSize: '12px', gap: '4px' }}
+                      onClick={() => {
+                        loadClients();
+                        setShowNewChatModal(true);
+                      }}
+                    >
+                      <Plus size={14} />
+                      <span>Iniciar Chat</span>
+                    </button>
+                  </div>
+
                   <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.08)', marginBottom: '14px', paddingBottom: '2px', gap: '8px' }}>
                     <button 
                       onClick={() => setChatsFilter('active')}
@@ -8412,6 +8589,150 @@ export const Dashboard: React.FC = () => {
         </div>
       )}
 
+      {/* MODAL: INICIAR NOVO CHAT / CONTATOS */}
+      {showNewChatModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0,0,0,0.85)',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          zIndex: 10000,
+          padding: '20px',
+          backdropFilter: 'blur(5px)'
+        }}>
+          <div className="card-premium animate-fade-in" style={{ maxWidth: '520px', width: '100%', padding: '24px', display: 'flex', flexDirection: 'column', maxHeight: '90vh' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <div>
+                <h3 style={{ fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px', margin: 0 }}>
+                  <MessageSquare size={20} style={{ color: 'var(--primary)' }} />
+                  Iniciar Conversa no WhatsApp
+                </h3>
+                <span style={{ fontSize: '12px', color: 'var(--muted)' }}>Selecione um contato salvo ou digite um novo número</span>
+              </div>
+              <button 
+                onClick={() => setShowNewChatModal(false)} 
+                style={{ background: 'transparent', border: 'none', color: 'var(--muted)', cursor: 'pointer' }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* SEARCH CONTACTS */}
+            <div className="form-group" style={{ marginBottom: '12px' }}>
+              <div style={{ position: 'relative' }}>
+                <Search size={16} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--muted)' }} />
+                <input 
+                  type="text" 
+                  className="form-input" 
+                  style={{ paddingLeft: '36px' }} 
+                  placeholder="Buscar contato por nome ou telefone..." 
+                  value={newChatSearch} 
+                  onChange={(e) => setNewChatSearch(e.target.value)} 
+                />
+              </div>
+            </div>
+
+            {/* CONTACTS LIST */}
+            <div style={{ flex: 1, overflowY: 'auto', maxHeight: '220px', marginBottom: '16px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.06)', background: 'rgba(0,0,0,0.2)', padding: '6px' }}>
+              {clients.filter(c => 
+                (c.name && c.name.toLowerCase().includes(newChatSearch.toLowerCase())) || 
+                (c.phone && c.phone.includes(newChatSearch))
+              ).length === 0 ? (
+                <div style={{ padding: '20px', textAlign: 'center', color: 'var(--muted)', fontSize: '13px' }}>
+                  Nenhum contato encontrado.
+                </div>
+              ) : (
+                clients
+                  .filter(c => 
+                    (c.name && c.name.toLowerCase().includes(newChatSearch.toLowerCase())) || 
+                    (c.phone && c.phone.includes(newChatSearch))
+                  )
+                  .map((client) => (
+                    <div 
+                      key={client.id || client.phone} 
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        padding: '10px 12px',
+                        borderRadius: '6px',
+                        marginBottom: '4px',
+                        background: 'rgba(255,255,255,0.03)',
+                        transition: 'all 0.2s'
+                      }}
+                    >
+                      <div>
+                        <p style={{ margin: 0, fontWeight: '600', fontSize: '14px', color: '#FFF' }}>{client.name}</p>
+                        <p style={{ margin: '2px 0 0 0', fontSize: '12px', color: 'var(--muted)' }}>{client.phone}</p>
+                      </div>
+                      <button 
+                        className="btn-primary" 
+                        style={{ padding: '6px 12px', fontSize: '12px', gap: '4px' }}
+                        onClick={() => handleStartChatWithContact(client)}
+                      >
+                        <MessageSquare size={14} />
+                        <span>Abrir Chat</span>
+                      </button>
+                    </div>
+                  ))
+              )}
+            </div>
+
+            {/* OR START CUSTOM NUMBER */}
+            <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '16px' }}>
+              <p style={{ fontSize: '13px', fontWeight: 'bold', color: 'var(--primary)', marginBottom: '10px' }}>
+                Ou digite um novo número não cadastrado:
+              </p>
+
+              <form onSubmit={handleStartCustomChat} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <input 
+                  type="text" 
+                  className="form-input" 
+                  placeholder="Nome do contato (opcional)" 
+                  value={newChatName} 
+                  onChange={(e) => setNewChatName(e.target.value)} 
+                />
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span style={{ fontSize: '18px', fontWeight: 'bold', color: 'var(--primary)' }}>+</span>
+                  <input
+                    type="text"
+                    className="form-input"
+                    style={{ width: '60px', padding: '10px 6px', textAlign: 'center' }}
+                    value={newChatDdi}
+                    onChange={(e) => setNewChatDdi(e.target.value.replace(/\D/g, ''))}
+                    placeholder="55"
+                    maxLength={4}
+                    required
+                  />
+                  <input 
+                    type="text" 
+                    className="form-input" 
+                    style={{ flex: 1 }}
+                    placeholder="DDD + Número (ex: 31999998888)" 
+                    value={newChatPhone} 
+                    onChange={(e) => setNewChatPhone(e.target.value)} 
+                    required 
+                  />
+                </div>
+
+                <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '6px' }}>
+                  <button type="button" className="btn-secondary" onClick={() => setShowNewChatModal(false)}>Cancelar</button>
+                  <button type="submit" className="btn-primary" style={{ gap: '6px' }}>
+                    <MessageSquare size={16} />
+                    <span>Iniciar Novo Chat</span>
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );
