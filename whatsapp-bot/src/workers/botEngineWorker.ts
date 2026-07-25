@@ -158,16 +158,22 @@ async function recordChatMessage(establishmentId: string, phone: string, text: s
      VALUES ($1, $2, $3, $4, NOW())`,
     [establishmentId, cleanPhone, text, fromMe]
   );
-  try {
-    await redisLockClient.publish('whatsapp-chat-updates', JSON.stringify({
-      establishmentId,
-      phone: cleanPhone,
-      text,
-      fromMe,
-      timestamp: new Date().toISOString()
-    }));
-  } catch (err) {
-    console.error('[BotWorker] Error publishing SSE chat update:', err);
+  await pool.query(
+    `UPDATE whatsapp_chats SET last_message_time = NOW() WHERE establishment_id = $1 AND phone = $2`,
+    [establishmentId, cleanPhone]
+  );
+  if (!fromMe) {
+    try {
+      await redisLockClient.publish('whatsapp-chat-updates', JSON.stringify({
+        establishmentId,
+        phone: cleanPhone,
+        text,
+        fromMe: false,
+        timestamp: new Date().toISOString()
+      }));
+    } catch (err) {
+      console.error('[BotWorker] Error publishing SSE chat update:', err);
+    }
   }
 }
 
@@ -187,13 +193,18 @@ export const botWorker = new Worker<InboundJobData>(
       console.log(`[BotWorker] Processing message for ${phone} (Tenant: ${establishmentId}, fromMe: ${!!fromMe})...`);
 
       const isFromMe = !!fromMe;
-      await recordChatMessage(establishmentId, phone, text, isFromMe);
+      if (isFromMe) {
+        console.log(`[BotWorker] Chat message for ${phone} is fromMe (${isFromMe}). Skipping record & bot flow.`);
+        return;
+      }
+
+      await recordChatMessage(establishmentId, phone, text, false);
 
       const session = await getOrLoadSession(establishmentId, phone);
       session.clientPushName = pushName;
 
-      if (isFromMe || session.state === 'PAUSED') {
-        console.log(`[BotWorker] Chat session for ${phone} is fromMe (${isFromMe}) or PAUSED. Skipping bot flow.`);
+      if (session.state === 'PAUSED') {
+        console.log(`[BotWorker] Chat session for ${phone} is PAUSED. Skipping bot flow.`);
         return;
       }
 

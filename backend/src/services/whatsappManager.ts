@@ -107,35 +107,16 @@ export async function sendManualMessage(establishmentId: string, phone: string, 
     establishmentId,
     phone: cleanPhone,
     text,
+    isManual: true,
   });
 
-  // 2. Insert into whatsapp_messages for chat history
-  await pool.query(
-    `INSERT INTO whatsapp_messages (establishment_id, phone, message_text, from_me, created_at)
-     VALUES ($1, $2, $3, true, NOW())`,
-    [establishmentId, cleanPhone, text]
-  );
-
-  // 3. Automatically pause bot session to prevent chatbot auto-replies
+  // 2. Automatically pause bot session to prevent chatbot auto-replies
   await pool.query(
     `INSERT INTO whatsapp_chats (establishment_id, phone, bot_state, last_message_time)
      VALUES ($1, $2, 'PAUSED', NOW())
      ON CONFLICT (establishment_id, phone) DO UPDATE SET bot_state = 'PAUSED', last_message_time = NOW()`,
     [establishmentId, cleanPhone]
   );
-
-  // 4. Publish SSE event via Redis Pub/Sub
-  try {
-    await redisConnection.publish('whatsapp-chat-updates', JSON.stringify({
-      establishmentId,
-      phone: cleanPhone,
-      text,
-      fromMe: true,
-      timestamp: new Date().toISOString()
-    }));
-  } catch (err) {
-    console.error('[Backend] Error publishing SSE chat update:', err);
-  }
 
   return formattedJid;
 }

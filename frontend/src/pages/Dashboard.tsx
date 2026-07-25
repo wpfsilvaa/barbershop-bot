@@ -1715,6 +1715,11 @@ export const Dashboard: React.FC = () => {
     return false;
   };
 
+  const cleanMsgText = (t?: string | null): string => {
+    if (!t) return '';
+    return t.replace(/^\*\[[^\]]+\]\s*[^:]+:\*\s*/, '').trim();
+  };
+
   // Bot Active Chats Management Handlers
   const fetchActiveChats = async (customEstId?: string) => {
     const targetEstId = customEstId || user?.establishment_id || (user?.role === 'admin' ? 'all' : null);
@@ -1985,46 +1990,10 @@ export const Dashboard: React.FC = () => {
     }
 
     try {
-      const response = await apiRequest(`/establishments/${targetEstId}/bot/chats/${selectedChat.phone}/message`, 'POST', {
+      await apiRequest(`/establishments/${targetEstId}/bot/chats/${selectedChat.phone}/message`, 'POST', {
         message: messageText
       });
       showToast('Mensagem enviada!', 'success');
-      
-      const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      const newMsg = {
-        text: response?.formattedMessage || messageText,
-        fromMe: true,
-        time: nowTime
-      };
-
-      setLocalChatMessages((prev) => [...prev, newMsg]);
-
-      setSelectedChat((prev: any) => {
-        if (!prev) return null;
-        const targetPhone = (response && response.realJid) ? response.realJid : prev.phone;
-        const existingMsgs = prev.messages || [];
-        return {
-          ...prev,
-          phone: targetPhone,
-          state: 'PAUSED',
-          messages: [...existingMsgs, newMsg]
-        };
-      });
-
-      setActiveChats((prevChats) =>
-        prevChats.map((chat) => {
-          if (chat.phone === selectedChat.phone || (response && response.realJid && chat.phone === response.realJid)) {
-            return {
-              ...chat,
-              state: 'PAUSED',
-              messages: [...(chat.messages || []), newMsg]
-            };
-          }
-          return chat;
-        })
-      );
-
-      await fetchActiveChats(targetEstId);
     } catch (err: any) {
       showToast(err.message || 'Erro ao enviar mensagem.', 'error');
     }
@@ -2063,8 +2032,9 @@ export const Dashboard: React.FC = () => {
               fromMe: !!data.fromMe,
               time: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
             };
+            const incomingClean = cleanMsgText(data.text);
             setLocalChatMessages((prev) => {
-              if (prev.some(m => m.text === incomingMsg.text && m.fromMe === incomingMsg.fromMe)) {
+              if (prev.some(m => m.fromMe === incomingMsg.fromMe && cleanMsgText(m.text) === incomingClean)) {
                 return prev;
               }
               return [...prev, incomingMsg];
@@ -2072,6 +2042,7 @@ export const Dashboard: React.FC = () => {
           }
 
           if (data.phone && data.text) {
+            const incomingClean = cleanMsgText(data.text);
             setActiveChats((prevChats) => {
               let found = false;
               const next = prevChats.map((chat) => {
@@ -2082,10 +2053,14 @@ export const Dashboard: React.FC = () => {
                     fromMe: !!data.fromMe,
                     time: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
                   };
+                  const existingMsgs = chat.messages || [];
+                  const isDuplicate = existingMsgs.some((m: any) => 
+                    m.fromMe === newMsgObj.fromMe && cleanMsgText(m.text) === incomingClean
+                  );
                   return {
                     ...chat,
                     last_message_time: new Date().toISOString(),
-                    messages: [...(chat.messages || []), newMsgObj]
+                    messages: isDuplicate ? existingMsgs : [...existingMsgs, newMsgObj]
                   };
                 }
                 return chat;

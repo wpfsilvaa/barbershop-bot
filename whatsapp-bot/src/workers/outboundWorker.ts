@@ -9,6 +9,7 @@ interface OutboundJobData {
   establishmentId: string;
   phone: string;
   text: string;
+  isManual?: boolean;
 }
 
 import { redisConnection } from '../config/redis';
@@ -62,12 +63,12 @@ async function recordOutboundChatMessage(establishmentId: string, phone: string,
 export const outboundWorker = new Worker<OutboundJobData>(
   'whatsapp-outbound-queue',
   async (job: Job<OutboundJobData>) => {
-    const { establishmentId, phone, text } = job.data;
+    const { establishmentId, phone, text, isManual } = job.data;
     const sessionManager = SessionManager.getInstance(pool);
 
-    console.log(`[OutboundWorker] Dispatching message to ${phone} (Establishment: ${establishmentId})...`);
+    console.log(`[OutboundWorker] Dispatching message to ${phone} (Establishment: ${establishmentId}, isManual: ${!!isManual})...`);
 
-    const success = await sessionManager.sendMessage(establishmentId, phone, text);
+    const success = await sessionManager.sendMessage(establishmentId, phone, text, !!isManual);
 
     if (!success) {
       throw new Error(`Outbound message failed. No active WhatsApp session for establishment ${establishmentId}.`);

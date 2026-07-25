@@ -11,7 +11,7 @@ import { usePostgresAuthState } from './dbAuthStore';
 import { inboundQueue, redisConnection } from '../config/redis';
 
 const logger = pino({ level: 'silent' });
-const BOT_SIGNATURE = '🤖*';
+const BOT_SIGNATURE = '🤖';
 
 export type SessionStatus =
   | 'DISCONNECTED'
@@ -403,7 +403,7 @@ export class SessionManager {
     }
   }
 
-  public async sendMessage(establishmentId: string, phone: string, text: string): Promise<boolean> {
+  public async sendMessage(establishmentId: string, phone: string, text: string, isManual: boolean = false): Promise<boolean> {
     const sock = this.sessions.get(establishmentId);
     if (!sock) {
       console.error(`[SessionManager] Outbound message failed. No active session for establishment ${establishmentId}.`);
@@ -487,12 +487,12 @@ export class SessionManager {
       }
     }
 
-    // 3. Fallback: check global lid_mappings table
+    // 5. Fallback: check global lid_mappings table
     if (!targetJid) {
       try {
         const globalRes = await this.pool.query(
-          `SELECT lid FROM lid_mappings WHERE phone = ANY($1)`,
-          [variations]
+          `SELECT lid FROM lid_mappings WHERE lid = $1`,
+          [cleanPhone]
         );
         if (globalRes.rows.length > 0 && globalRes.rows[0].lid) {
           targetJid = `${globalRes.rows[0].lid}@lid`;
@@ -500,14 +500,14 @@ export class SessionManager {
       } catch (err) {}
     }
 
-    // 4. Default fallback: direct @s.whatsapp.net
+    // 6. Default fallback: direct @s.whatsapp.net
     if (!targetJid) {
       targetJid = `${cleanPhone}@s.whatsapp.net`;
     }
 
-    console.log(`[SessionManager] Sending outbound message to ${targetJid} (Tenant: ${establishmentId})...`);
+    console.log(`[SessionManager] Sending outbound message to ${targetJid} (Tenant: ${establishmentId}, isManual: ${isManual})...`);
 
-    const textWithSignature = `${text}\n\n${BOT_SIGNATURE}`;
+    const textWithSignature = isManual ? text : `${text}\n\n${BOT_SIGNATURE}`;
     const sent = await sock.sendMessage(targetJid, { text: textWithSignature });
 
     if (!sent?.key?.id) {
