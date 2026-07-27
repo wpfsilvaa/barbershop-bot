@@ -518,6 +518,28 @@ export class SessionManager {
     return true;
   }
 
+  public async sendPresenceUpdate(
+    establishmentId: string,
+    phone: string,
+    presence: 'composing' | 'recording' | 'paused' | 'available' | 'unavailable' = 'composing'
+  ): Promise<boolean> {
+    const sock = this.sessions.get(establishmentId);
+    if (!sock) return false;
+
+    try {
+      let cleanPhone = phone.replace(/\D/g, '');
+      let targetJid: string = `${cleanPhone}@s.whatsapp.net`;
+      if (phone.includes('@')) {
+        targetJid = jidNormalizedUser(phone);
+      }
+      await sock.sendPresenceUpdate(presence, targetJid);
+      return true;
+    } catch (err: any) {
+      console.warn(`[SessionManager] Presence update (${presence}) failed for ${phone}:`, err.message);
+      return false;
+    }
+  }
+
   // Connect active sessions in controlled batches to prevent DB/Redis connection storms
   public async initializeAllSessions(): Promise<void> {
     try {

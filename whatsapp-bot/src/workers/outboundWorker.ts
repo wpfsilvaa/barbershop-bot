@@ -68,6 +68,27 @@ export const outboundWorker = new Worker<OutboundJobData>(
 
     console.log(`[OutboundWorker] Dispatching message to ${phone} (Establishment: ${establishmentId}, isManual: ${!!isManual})...`);
 
+    // Humanize automated bot responses with random delay (10-20 seconds) and 'composing' typing status
+    if (!isManual) {
+      const minDelaySec = parseInt(process.env.BOT_DELAY_MIN_SECONDS || '10', 10);
+      const maxDelaySec = parseInt(process.env.BOT_DELAY_MAX_SECONDS || '20', 10);
+      const delayMs = Math.floor(Math.random() * ((maxDelaySec - minDelaySec + 1) * 1000)) + (minDelaySec * 1000);
+
+      console.log(`[OutboundWorker] Humanizing bot response to ${phone}: waiting ${(delayMs / 1000).toFixed(1)}s (typing status active)...`);
+
+      await sessionManager.sendPresenceUpdate(establishmentId, phone, 'composing');
+
+      const startTime = Date.now();
+      while (Date.now() - startTime < delayMs) {
+        const remaining = delayMs - (Date.now() - startTime);
+        const interval = Math.min(remaining, 6000);
+        await new Promise((resolve) => setTimeout(resolve, interval));
+        if (Date.now() - startTime < delayMs) {
+          await sessionManager.sendPresenceUpdate(establishmentId, phone, 'composing');
+        }
+      }
+    }
+
     const success = await sessionManager.sendMessage(establishmentId, phone, text, !!isManual);
 
     if (!success) {
@@ -80,5 +101,6 @@ export const outboundWorker = new Worker<OutboundJobData>(
   {
     connection: { host: redisHost, port: redisPort },
     concurrency: 50,
+    lockDuration: 60000,
   }
 );

@@ -218,7 +218,7 @@ export async function transferChatSession(
   );
 
   // 2. Build transfer notice message text
-  const transferNoticeText = `🔄 *Atendimento Transferido*\n\nSeu atendimento foi transferido por *${transferredByAgentName}* para o profissional *${targetAgentName}*. Ele dará sequência ao seu atendimento em instantes! 💈`;
+  const transferNoticeText = `*Atendimento Transferido*\n\nSeu atendimento foi transferido por *${transferredByAgentName}* para o profissional *${targetAgentName}*. Ele dará sequência ao seu atendimento em instantes!`;
 
   // 3. Queue outbound WhatsApp message
   await outboundQueue.add('send-whatsapp-message', {
