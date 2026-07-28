@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import pool from '../config/db';
 import { AuthenticatedRequest } from '../middleware/auth';
 import { sendOrchestratedMessage } from '../services/whatsappManager';
+import { broadcastToEstablishment } from '../services/wsServer';
 import { formatZoned, zonedTimeToUtc } from '../utils/datetime';
 import { normalizePhone } from '../utils/phone';
 
@@ -298,6 +299,14 @@ export const createAppointment = async (req: AuthenticatedRequest, res: Response
 
     await client.query('COMMIT');
 
+    broadcastToEstablishment(String(establishmentId), {
+      type: 'appointment_update',
+      action: 'created',
+      client_name,
+      appointment_time: validated.date.toISOString(),
+      barber_name
+    });
+
     const timeInfo = formatNotificationDate(validated.date);
     const messageText = `✅ *Horário Reservado Manualmente!*\n\nOlá, *${client_name}*!\n\nConfirmamos o agendamento do seu horário:\n\n` +
                         `*Estabelecimento:* ${establishment_name}\n` +
@@ -400,6 +409,12 @@ export const updateAppointment = async (req: AuthenticatedRequest, res: Response
 
     await client.query('COMMIT');
 
+    broadcastToEstablishment(String(establishmentId), {
+      type: 'appointment_update',
+      action: 'rescheduled',
+      appointment_time: appointment_time
+    });
+
     // Send WhatsApp notification to client
     const oldTime = formatNotificationDate(appt.appointment_time);
     const newTime = formatNotificationDate(appointment_time);
@@ -463,6 +478,11 @@ export const cancelAppointment = async (req: AuthenticatedRequest, res: Response
        WHERE id = $2 AND establishment_id = $3`,
       [reason || 'Cancelado pelo profissional', bookingId, establishmentId]
     );
+
+    broadcastToEstablishment(String(establishmentId), {
+      type: 'appointment_update',
+      action: 'cancelled'
+    });
 
     // Send WhatsApp notification
     const timeInfo = formatNotificationDate(appt.appointment_time);
@@ -593,6 +613,14 @@ export const createPublicAppointment = async (req: Request, res: Response) => {
 
     await client.query('COMMIT');
 
+    broadcastToEstablishment(String(establishmentId), {
+      type: 'appointment_update',
+      action: 'created',
+      client_name,
+      appointment_time: validated.date.toISOString(),
+      barber_name
+    });
+
     // Send WhatsApp notification
     const timeInfo = formatNotificationDate(validated.date);
     const messageText = `✅ *Agendamento Confirmado via Web App!*\n\nOlá, *${client_name}*!\n\nSeu horário foi reservado com sucesso no nosso site:\n\n` +
@@ -657,6 +685,11 @@ export const completeAppointment = async (req: AuthenticatedRequest, res: Respon
     if (result.rows.length === 0) {
       return res.status(400).json({ error: 'Este atendimento já foi concluído.' });
     }
+
+    broadcastToEstablishment(String(establishmentId), {
+      type: 'appointment_update',
+      action: 'completed'
+    });
 
     // Send thank you message on WhatsApp
     const details = await pool.query(

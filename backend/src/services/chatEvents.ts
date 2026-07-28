@@ -18,7 +18,7 @@ type Listener = (payload: any) => void;
 const listeners = new Set<Listener>();
 let subscriber: Redis | null = null;
 
-function ensureSubscriber() {
+export function ensureSubscriber() {
   if (subscriber) return;
 
   subscriber = new Redis({
@@ -44,6 +44,15 @@ function ensureSubscriber() {
       payload = JSON.parse(message);
     } catch {
       return; // Mensagem malformada no canal: ignora.
+    }
+
+    if (payload?.establishmentId) {
+      try {
+        const { broadcastToEstablishment } = require('./wsServer');
+        broadcastToEstablishment(payload.establishmentId, payload);
+      } catch (err) {
+        console.error('[ChatEvents] Failed to broadcast payload via WS:', err);
+      }
     }
 
     for (const listener of listeners) {

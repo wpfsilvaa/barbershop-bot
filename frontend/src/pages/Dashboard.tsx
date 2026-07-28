@@ -137,6 +137,30 @@ const drawLineChart = (data: any[]) => {
   );
 };
 
+const getLocalDateString = (dateInput?: string | Date | null): string => {
+  if (!dateInput) return '';
+  if (typeof dateInput === 'string') {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateInput)) {
+      return dateInput;
+    }
+    const d = new Date(dateInput);
+    if (!isNaN(d.getTime())) {
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    }
+    return dateInput.slice(0, 10);
+  }
+  if (dateInput instanceof Date && !isNaN(dateInput.getTime())) {
+    const year = dateInput.getFullYear();
+    const month = String(dateInput.getMonth() + 1).padStart(2, '0');
+    const day = String(dateInput.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+  return '';
+};
+
 export const Dashboard: React.FC = () => {
   const { user, logout, reloadUser } = useAuth();
   const { establishment, updateThemeColors } = useEstablishmentTheme();
@@ -197,14 +221,18 @@ export const Dashboard: React.FC = () => {
   const [feedbacks, setFeedbacks] = useState<any[]>([]);
   const [loadingFeedbacks, setLoadingFeedbacks] = useState<boolean>(false);
 
+  // Attention & Notification Alert States
+  const [hasNewAppointmentsAlert, setHasNewAppointmentsAlert] = useState<boolean>(false);
+  const [hasAttendantAlert, setHasAttendantAlert] = useState<boolean>(false);
+
   // Filter states
-  const [filterDate, setFilterDate] = useState(new Date().toISOString().split('T')[0]);
+  const [filterDate, setFilterDate] = useState(getLocalDateString(new Date()));
   const [searchQuery, setSearchQuery] = useState('');
 
   // Form states - Appointments (Create)
   const [showApptModal, setShowApptModal] = useState(false);
   const [apptBarber, setApptBarber] = useState('');
-  const [apptDate, setApptDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [apptDate, setApptDate] = useState<string>(getLocalDateString(new Date()));
   const [apptClientName, setApptClientName] = useState('');
   const [apptClientPhone, setApptClientPhone] = useState('');
   const [apptCountryDdi, setApptCountryDdi] = useState('55');
@@ -219,7 +247,7 @@ export const Dashboard: React.FC = () => {
   const [rescheduleApptId, setRescheduleApptId] = useState('');
   const [rescheduleClientName, setRescheduleClientName] = useState('');
   const [rescheduleBarber, setRescheduleBarber] = useState('');
-  const [rescheduleDate, setRescheduleDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [rescheduleDate, setRescheduleDate] = useState<string>(getLocalDateString(new Date()));
   const [rescheduleTime, setRescheduleTime] = useState('');
   const [rescheduleReason, setRescheduleReason] = useState('');
   const [rescheduleSlots, setRescheduleSlots] = useState<string[]>([]);
@@ -521,6 +549,9 @@ export const Dashboard: React.FC = () => {
       // 1. Fetch appointments
       const appts = await apiRequest(`/establishments/${user.establishment_id}/bookings`, 'GET');
       setAppointments(appts);
+
+      // 2. Fetch active chats (for real-time attendant badges & alerts)
+      fetchActiveChats();
 
       // 2. Fetch barbers (Owner/Admin only)
       if (user.role === 'owner' || user.role === 'admin') {
@@ -1280,7 +1311,7 @@ export const Dashboard: React.FC = () => {
     setRescheduleApptId(appt.id);
     setRescheduleClientName(appt.client_name);
     setRescheduleBarber(appt.barber_id);
-    const existingDate = appt.appointment_time ? new Date(appt.appointment_time).toISOString().split('T')[0] : filterDate;
+    const existingDate = appt.appointment_time ? getLocalDateString(appt.appointment_time) : filterDate;
     setRescheduleDate(existingDate);
     setRescheduleTime('');
     setRescheduleReason('');
@@ -1665,35 +1696,67 @@ export const Dashboard: React.FC = () => {
     }
   };
 
+  // Unlock Web Audio API context on user interaction for browser auto-play policies
+  useEffect(() => {
+    const unlockAudio = () => {
+      try {
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+        if (AudioCtx) {
+          let ctx = (window as any)._sharedAudioCtx;
+          if (!ctx) {
+            ctx = new AudioCtx();
+            (window as any)._sharedAudioCtx = ctx;
+          }
+          if (ctx.state === 'suspended') {
+            ctx.resume();
+          }
+        }
+      } catch (e) {}
+    };
+    window.addEventListener('click', unlockAudio);
+    window.addEventListener('touchstart', unlockAudio);
+    return () => {
+      window.removeEventListener('click', unlockAudio);
+      window.removeEventListener('touchstart', unlockAudio);
+    };
+  }, []);
+
   // Play Audio Notification Chime (Web Audio API)
   const playNotificationSound = () => {
     if (!soundEnabled) return;
     try {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioCtx) return;
-      const ctx = new AudioCtx();
+      let ctx = (window as any)._sharedAudioCtx;
+      if (!ctx) {
+        ctx = new AudioCtx();
+        (window as any)._sharedAudioCtx = ctx;
+      }
+      if (ctx.state === 'suspended') {
+        ctx.resume();
+      }
 
       const osc1 = ctx.createOscillator();
       const gain1 = ctx.createGain();
       osc1.type = 'sine';
       osc1.frequency.setValueAtTime(659.25, ctx.currentTime);
-      gain1.gain.setValueAtTime(0.15, ctx.currentTime);
-      gain1.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
+      gain1.gain.setValueAtTime(0.2, ctx.currentTime);
+      gain1.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
       osc1.connect(gain1);
       gain1.connect(ctx.destination);
       osc1.start();
-      osc1.stop(ctx.currentTime + 0.25);
+      osc1.stop(ctx.currentTime + 0.3);
 
       const osc2 = ctx.createOscillator();
       const gain2 = ctx.createGain();
       osc2.type = 'sine';
-      osc2.frequency.setValueAtTime(987.77, ctx.currentTime + 0.12);
-      gain2.gain.setValueAtTime(0.2, ctx.currentTime + 0.12);
-      gain2.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+      osc2.frequency.setValueAtTime(987.77, ctx.currentTime + 0.15);
+      gain2.gain.setValueAtTime(0.25, ctx.currentTime + 0.15);
+      gain2.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
       osc2.connect(gain2);
       gain2.connect(ctx.destination);
-      osc2.start(ctx.currentTime + 0.12);
-      osc2.stop(ctx.currentTime + 0.4);
+      osc2.start(ctx.currentTime + 0.15);
+      osc2.stop(ctx.currentTime + 0.5);
     } catch (e) {
       console.warn('Audio play error:', e);
     }
@@ -1807,6 +1870,28 @@ export const Dashboard: React.FC = () => {
           if (data.type === 'chat_update') {
             console.log('[WS] Received real-time chat update:', data);
             fetchActiveChats();
+            playNotificationSoundRef.current();
+
+            if (data.state === 'PAUSED' || data.action === 'attendant_requested') {
+              setHasAttendantAlert(true);
+              showToast(`🚨 Cliente solicitou Atendimento Humano no WhatsApp! (${data.phone || ''})`, 'error');
+            } else if (data.fromMe === false) {
+              setHasAttendantAlert(true);
+              showToast(`💬 Nova mensagem no WhatsApp (${data.phone || ''})`, 'success');
+            }
+          } else if (data.type === 'appointment_update') {
+            console.log('[WS] Received real-time appointment update:', data);
+            loadData();
+            playNotificationSoundRef.current();
+            setHasNewAppointmentsAlert(true);
+            const actionMsg = data.action === 'cancelled'
+              ? 'Agendamento cancelado'
+              : data.action === 'rescheduled'
+                ? 'Agendamento reagendado'
+                : data.action === 'completed'
+                  ? 'Agendamento finalizado'
+                  : `Novo agendamento${data.client_name ? `: ${data.client_name}` : ''}!`;
+            showToast(`📅 ${actionMsg}`, 'success');
           }
         } catch (e) {
           console.error('[WS] Failed to parse message:', e);
@@ -2595,10 +2680,12 @@ export const Dashboard: React.FC = () => {
   };
 
   const filteredAppointments = appointments.filter((appt) => {
-    const apptDate = new Date(appt.appointment_time).toISOString().split('T')[0];
-    const matchesDate = apptDate === filterDate;
-    const matchesSearch = appt.client_name.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                          appt.client_phone.includes(searchQuery);
+    const apptDateStr = getLocalDateString(appt.appointment_time);
+    const rawDatePrefix = typeof appt.appointment_time === 'string' ? appt.appointment_time.slice(0, 10) : '';
+    const matchesDate = apptDateStr === filterDate || rawDatePrefix === filterDate;
+    const matchesSearch = !searchQuery || 
+                          appt.client_name?.toLowerCase().includes(searchQuery.toLowerCase()) || 
+                          appt.client_phone?.includes(searchQuery);
     return matchesDate && matchesSearch;
   });
 
@@ -2869,31 +2956,86 @@ export const Dashboard: React.FC = () => {
                       justifyContent: 'flex-start', 
                       width: '100%',
                       padding: '12px 16px',
-                      border: activeTab === 'appointments' ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.05)',
-                      color: activeTab === 'appointments' ? 'var(--primary)' : 'var(--foreground)',
-                      backgroundColor: activeTab === 'appointments' ? 'rgba(212, 175, 55, 0.1)' : 'rgba(255,255,255,0.02)'
+                      border: hasNewAppointmentsAlert 
+                        ? '2px solid #EAB308' 
+                        : activeTab === 'appointments' ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.05)',
+                      color: activeTab === 'appointments' || hasNewAppointmentsAlert ? 'var(--primary)' : 'var(--foreground)',
+                      backgroundColor: hasNewAppointmentsAlert 
+                        ? 'rgba(234, 179, 8, 0.25)' 
+                        : activeTab === 'appointments' ? 'rgba(212, 175, 55, 0.1)' : 'rgba(255,255,255,0.02)',
+                      boxShadow: hasNewAppointmentsAlert ? '0 0 15px rgba(234, 179, 8, 0.4)' : 'none',
+                      position: 'relative'
                     }} 
-                    onClick={() => { setActiveTab('appointments'); setIsMobileDrawerOpen(false); }}
+                    onClick={() => { 
+                      setActiveTab('appointments'); 
+                      setHasNewAppointmentsAlert(false); 
+                      setIsMobileDrawerOpen(false); 
+                    }}
                   >
                     <Calendar size={18} />
                     <span>Agendamentos</span>
+                    {hasNewAppointmentsAlert && (
+                      <span style={{
+                        marginLeft: 'auto',
+                        backgroundColor: '#EAB308',
+                        color: '#000000',
+                        fontWeight: 'bold',
+                        fontSize: '10px',
+                        padding: '2px 8px',
+                        borderRadius: '10px',
+                        letterSpacing: '0.5px'
+                      }}>
+                        NOVO!
+                      </span>
+                    )}
                   </button>
 
-                  <button 
-                    className="btn-secondary" 
-                    style={{ 
-                      justifyContent: 'flex-start', 
-                      width: '100%',
-                      padding: '12px 16px',
-                      border: activeTab === 'chats' ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.05)',
-                      color: activeTab === 'chats' ? 'var(--primary)' : 'var(--foreground)',
-                      backgroundColor: activeTab === 'chats' ? 'rgba(212, 175, 55, 0.1)' : 'rgba(255,255,255,0.02)'
-                    }} 
-                    onClick={() => { setActiveTab('chats'); setSelectedChat(null); setIsMobileDrawerOpen(false); }}
-                  >
-                    <MessageCircle size={18} />
-                    <span>Conversas do Bot</span>
-                  </button>
+                  {(() => {
+                    const pausedCount = activeChats.filter(c => c.state === 'PAUSED').length;
+                    const isAttendantAlertActive = hasAttendantAlert || pausedCount > 0;
+                    return (
+                      <button 
+                        className="btn-secondary" 
+                        style={{ 
+                          justifyContent: 'flex-start', 
+                          width: '100%',
+                          padding: '12px 16px',
+                          border: isAttendantAlertActive
+                            ? '2px solid #EF4444' 
+                            : activeTab === 'chats' ? '1px solid var(--primary)' : '1px solid rgba(255,255,255,0.05)',
+                          color: isAttendantAlertActive ? '#EF4444' : activeTab === 'chats' ? 'var(--primary)' : 'var(--foreground)',
+                          backgroundColor: isAttendantAlertActive 
+                            ? 'rgba(239, 68, 68, 0.25)' 
+                            : activeTab === 'chats' ? 'rgba(212, 175, 55, 0.1)' : 'rgba(255,255,255,0.02)',
+                          boxShadow: isAttendantAlertActive ? '0 0 15px rgba(239, 68, 68, 0.4)' : 'none',
+                          position: 'relative'
+                        }} 
+                        onClick={() => { 
+                          setActiveTab('chats'); 
+                          setHasAttendantAlert(false); 
+                          setSelectedChat(null); 
+                          setIsMobileDrawerOpen(false); 
+                        }}
+                      >
+                        <MessageCircle size={18} />
+                        <span>Conversas do Bot</span>
+                        {isAttendantAlertActive && (
+                          <span style={{
+                            marginLeft: 'auto',
+                            backgroundColor: '#EF4444',
+                            color: '#FFFFFF',
+                            fontWeight: 'bold',
+                            fontSize: '10px',
+                            padding: '2px 8px',
+                            borderRadius: '10px',
+                            letterSpacing: '0.5px'
+                          }}>
+                            {pausedCount > 0 ? `ATENDIMENTO (${pausedCount})` : 'NOVA MSG'}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })()}
 
                   <button 
                     className="btn-secondary" 
@@ -3291,32 +3433,82 @@ export const Dashboard: React.FC = () => {
                 className="btn-secondary" 
                 style={{ 
                   justifyContent: 'flex-start', 
-                  border: activeTab === 'appointments' ? '1px solid var(--primary)' : '1px solid transparent',
-                  color: activeTab === 'appointments' ? 'var(--primary)' : 'var(--foreground)',
-                  backgroundColor: activeTab === 'appointments' ? 'rgba(212, 175, 55, 0.05)' : 'transparent'
+                  border: hasNewAppointmentsAlert 
+                    ? '2px solid #EAB308' 
+                    : activeTab === 'appointments' ? '1px solid var(--primary)' : '1px solid transparent',
+                  color: activeTab === 'appointments' || hasNewAppointmentsAlert ? 'var(--primary)' : 'var(--foreground)',
+                  backgroundColor: hasNewAppointmentsAlert 
+                    ? 'rgba(234, 179, 8, 0.25)' 
+                    : activeTab === 'appointments' ? 'rgba(212, 175, 55, 0.05)' : 'transparent',
+                  boxShadow: hasNewAppointmentsAlert ? '0 0 15px rgba(234, 179, 8, 0.4)' : 'none',
+                  position: 'relative'
                 }} 
-                onClick={() => setActiveTab('appointments')}
+                onClick={() => {
+                  setActiveTab('appointments');
+                  setHasNewAppointmentsAlert(false);
+                }}
               >
                 <Calendar size={18} />
                 <span>Agendamentos</span>
+                {hasNewAppointmentsAlert && (
+                  <span style={{
+                    marginLeft: 'auto',
+                    backgroundColor: '#EAB308',
+                    color: '#000000',
+                    fontWeight: 'bold',
+                    fontSize: '10px',
+                    padding: '2px 8px',
+                    borderRadius: '10px',
+                    letterSpacing: '0.5px'
+                  }}>
+                    NOVO!
+                  </span>
+                )}
               </button>
 
-              <button 
-                className="btn-secondary" 
-                style={{ 
-                  justifyContent: 'flex-start', 
-                  border: activeTab === 'chats' ? '1px solid var(--primary)' : '1px solid transparent',
-                  color: activeTab === 'chats' ? 'var(--primary)' : 'var(--foreground)',
-                  backgroundColor: activeTab === 'chats' ? 'rgba(212, 175, 55, 0.05)' : 'transparent'
-                }} 
-                onClick={() => {
-                  setActiveTab('chats');
-                  setSelectedChat(null);
-                }}
-              >
-                <MessageCircle size={18} />
-                <span>Conversas do Bot</span>
-              </button>
+              {(() => {
+                const pausedCount = activeChats.filter(c => c.state === 'PAUSED').length;
+                const isAttendantAlertActive = hasAttendantAlert || pausedCount > 0;
+                return (
+                  <button 
+                    className="btn-secondary" 
+                    style={{ 
+                      justifyContent: 'flex-start', 
+                      border: isAttendantAlertActive 
+                        ? '2px solid #EF4444' 
+                        : activeTab === 'chats' ? '1px solid var(--primary)' : '1px solid transparent',
+                      color: isAttendantAlertActive ? '#EF4444' : activeTab === 'chats' ? 'var(--primary)' : 'var(--foreground)',
+                      backgroundColor: isAttendantAlertActive 
+                        ? 'rgba(239, 68, 68, 0.25)' 
+                        : activeTab === 'chats' ? 'rgba(212, 175, 55, 0.05)' : 'transparent',
+                      boxShadow: isAttendantAlertActive ? '0 0 15px rgba(239, 68, 68, 0.4)' : 'none',
+                      position: 'relative'
+                    }} 
+                    onClick={() => {
+                      setActiveTab('chats');
+                      setHasAttendantAlert(false);
+                      setSelectedChat(null);
+                    }}
+                  >
+                    <MessageCircle size={18} />
+                    <span>Conversas do Bot</span>
+                    {isAttendantAlertActive && (
+                      <span style={{
+                        marginLeft: 'auto',
+                        backgroundColor: '#EF4444',
+                        color: '#FFFFFF',
+                        fontWeight: 'bold',
+                        fontSize: '10px',
+                        padding: '2px 8px',
+                        borderRadius: '10px',
+                        letterSpacing: '0.5px'
+                      }}>
+                        {pausedCount > 0 ? `ATENDIMENTO (${pausedCount})` : 'NOVA MSG'}
+                      </span>
+                    )}
+                  </button>
+                );
+              })()}
               <button 
                 className="btn-secondary" 
                 style={{ 
@@ -3642,7 +3834,7 @@ export const Dashboard: React.FC = () => {
                   <p style={{ color: 'var(--muted)', fontSize: '14px' }}>Gerencie as reservas ou efetue reagendamentos com aviso via bot</p>
                 </div>
                 <button className="btn-primary" onClick={() => {
-                  const todayStr = new Date().toISOString().split('T')[0];
+                  const todayStr = getLocalDateString(new Date());
                   setApptDate(filterDate || todayStr);
                   if (user?.role === 'barber') setApptBarber(user.id);
                   else if (barbers.length > 0) setApptBarber(barbers[0].id);
@@ -8057,7 +8249,7 @@ export const Dashboard: React.FC = () => {
                     <p style={{ color: '#F87171', fontSize: '13px', margin: 0, fontWeight: '500' }}>
                       Sem horários vagos para este profissional nesta data.
                     </p>
-                    {apptDate === new Date().toISOString().split('T')[0] && (
+                    {apptDate === getLocalDateString(new Date()) && (
                       <p style={{ color: 'var(--muted)', fontSize: '12px', margin: '4px 0 0 0' }}>
                         💡 Os horários de hoje já passaram ou o expediente encerrou. Selecione a data de amanhã ou uma data futura.
                       </p>
@@ -8119,7 +8311,7 @@ export const Dashboard: React.FC = () => {
                     <p style={{ color: '#F87171', fontSize: '13px', margin: 0, fontWeight: '500' }}>
                       Sem horários livres para este profissional nesta data.
                     </p>
-                    {rescheduleDate === new Date().toISOString().split('T')[0] && (
+                    {rescheduleDate === getLocalDateString(new Date()) && (
                       <p style={{ color: 'var(--muted)', fontSize: '12px', margin: '4px 0 0 0' }}>
                         💡 Os horários de hoje já passaram ou o expediente encerrou. Selecione a data de amanhã ou uma data futura.
                       </p>

@@ -9,6 +9,14 @@ const redisPort = parseInt(process.env.REDIS_PORT || '6379', 10);
 
 const redisLockClient = new Redis({ host: redisHost, port: redisPort });
 
+const formatOptionLabel = (num: number): string => {
+  const numberEmojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
+  if (num >= 1 && num <= 10) {
+    return numberEmojis[num - 1];
+  }
+  return `*${num}.*`;
+};
+
 interface InboundJobData {
   establishmentId: string;
   phone: string;
@@ -352,10 +360,10 @@ export const botWorker = new Worker<InboundJobData>(
 
         let menuText = `Olá, *${clientInfo.name}*! Seja bem-vindo! 💈✂️\n\n*Como podemos te ajudar hoje?*\n\n`;
         barbersRes.rows.forEach((b, idx) => {
-          menuText += `${idx + 1}️⃣ *Agendar com ${b.name}*\n`;
+          menuText += `${formatOptionLabel(idx + 1)} *Agendar com ${b.name}*\n`;
         });
         const supportOptionIdx = barbersRes.rows.length + 1;
-        menuText += `${supportOptionIdx}️⃣ 💬 *Falar com Atendente*\n`;
+        menuText += `${formatOptionLabel(supportOptionIdx)} 💬 *Falar com Atendente*\n`;
         menuText += `\n👉 *Digite apenas o número correspondente:*`;
 
         await outboundQueue.add('send-whatsapp-message', {
@@ -422,7 +430,7 @@ export const botWorker = new Worker<InboundJobData>(
         let menuText = `Perfeito! Você escolheu *${selectedBarber.name}*. 💈\n\n*Escolha o serviço desejado:*\n\n`;
         session.servicesList.forEach((s, idx) => {
           const priceFormatted = s.price > 0 ? ` - R$ ${s.price.toFixed(2).replace('.', ',')}` : '';
-          menuText += `${idx + 1}️⃣ *${s.name}*${priceFormatted}\n`;
+          menuText += `${formatOptionLabel(idx + 1)} *${s.name}*${priceFormatted}\n`;
         });
         menuText += `\n👉 *Digite apenas o número do serviço:*`;
 
@@ -488,7 +496,7 @@ export const botWorker = new Worker<InboundJobData>(
 
         let menuText = `Serviço selecionado: *${selectedService.name}*. ✂️\n\n*Escolha o dia para o seu agendamento:*\n\n`;
         dates.forEach((d, idx) => {
-          menuText += `${idx + 1}️⃣ *${d.label}*\n`;
+          menuText += `${formatOptionLabel(idx + 1)} *${d.label}*\n`;
         });
         menuText += `\n👉 *Digite o número correspondente à data:*`;
 
@@ -562,7 +570,7 @@ export const botWorker = new Worker<InboundJobData>(
 
         const now = new Date();
 
-        while (currMinutes < endMinutes && slots.length < 10) {
+        while (currMinutes < endMinutes) {
           const h = Math.floor(currMinutes / 60);
           const m = currMinutes % 60;
           const timeLabel = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
@@ -591,7 +599,7 @@ export const botWorker = new Worker<InboundJobData>(
 
         let menuText = `Data escolhida: *${selectedDateObj.label}*. 📅\n\n*Escolha o horário desejado:*\n\n`;
         slots.forEach((s, idx) => {
-          menuText += `${idx + 1}️⃣ *${s.timeLabel}*\n`;
+          menuText += `${formatOptionLabel(idx + 1)} *${s.timeLabel}*\n`;
         });
         menuText += `\n👉 *Digite o número do horário desejado:*`;
 
@@ -654,6 +662,19 @@ export const botWorker = new Worker<InboundJobData>(
               session.selectedServiceId === 'default' ? null : session.selectedServiceId
             ]
           );
+
+          try {
+            await redisLockClient.publish('whatsapp-chat-updates', JSON.stringify({
+              type: 'appointment_update',
+              action: 'created',
+              establishmentId,
+              client_name: clientCheck.rows[0]?.name || 'Cliente',
+              appointment_time: selectedSlot.iso,
+              barber_name: session.selectedBarberName
+            }));
+          } catch (pubErr) {
+            console.error('[BotWorker] Failed to publish appointment_update to Redis:', pubErr);
+          }
         } catch (insertErr: any) {
           if (insertErr?.code === '23505') {
             await outboundQueue.add('send-whatsapp-message', {

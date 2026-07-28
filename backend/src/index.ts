@@ -130,6 +130,7 @@ process.on('uncaughtException', (err) => {
 
 import http from 'http';
 import { initializeWebSocketServer } from './services/wsServer';
+import { ensureSubscriber } from './services/chatEvents';
 
 const server = http.createServer(app);
 
@@ -137,8 +138,9 @@ const server = http.createServer(app);
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   
-  // Initialize WebSocket server
+  // Initialize WebSocket server & Redis subscriber
   initializeWebSocketServer(server);
+  ensureSubscriber();
   
   // Start WhatsApp Multitenant Sessions Orchestration
   initializeAllWhatsAppSessions().catch((err) => {

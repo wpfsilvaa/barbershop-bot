@@ -68,10 +68,10 @@ export const outboundWorker = new Worker<OutboundJobData>(
 
     console.log(`[OutboundWorker] Dispatching message to ${phone} (Establishment: ${establishmentId}, isManual: ${!!isManual})...`);
 
-    // Humanize automated bot responses with random delay (10-20 seconds) and 'composing' typing status
+    // Humanize automated bot responses with random delay (7-16 seconds) and 'composing' typing status
     if (!isManual) {
-      const minDelaySec = parseInt(process.env.BOT_DELAY_MIN_SECONDS || '10', 10);
-      const maxDelaySec = parseInt(process.env.BOT_DELAY_MAX_SECONDS || '20', 10);
+      const minDelaySec = parseInt(process.env.BOT_DELAY_MIN_SECONDS || '7', 10);
+      const maxDelaySec = parseInt(process.env.BOT_DELAY_MAX_SECONDS || '16', 10);
       const delayMs = Math.floor(Math.random() * ((maxDelaySec - minDelaySec + 1) * 1000)) + (minDelaySec * 1000);
 
       console.log(`[OutboundWorker] Humanizing bot response to ${phone}: waiting ${(delayMs / 1000).toFixed(1)}s (typing status active)...`);

@@ -86,6 +86,8 @@ services:
       - REDIS_HOST=127.0.0.1
       - REDIS_PORT=6379
       - INTERNAL_API_KEY=${INTERNAL_API_KEY:?defina INTERNAL_API_KEY no .env da raiz}
+      - BOT_DELAY_MIN_SECONDS=${BOT_DELAY_MIN_SECONDS:-7}
+      - BOT_DELAY_MAX_SECONDS=${BOT_DELAY_MAX_SECONDS:-16}
       - APP_TIMEZONE=${APP_TIMEZONE:-America/Sao_Paulo}
       - TZ=America/Sao_Paulo
     depends_on:

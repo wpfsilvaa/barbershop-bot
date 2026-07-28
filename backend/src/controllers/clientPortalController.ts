@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import pool from '../config/db';
 import { sendOrchestratedMessage } from '../services/whatsappManager';
+import { broadcastToEstablishment } from '../services/wsServer';
 import { generateFutureBookingsForPlan } from './planController';
 import { JWT_SECRET, JWT_CLIENT_EXPIRATION } from '../config/jwt';
 import { normalizePhone } from '../utils/phone';
@@ -272,6 +273,11 @@ export const rescheduleBooking = async (req: any, res: Response) => {
       [targetDate.toISOString(), bookingId]
     );
 
+    broadcastToEstablishment(String(appt.establishment_id), {
+      type: 'appointment_update',
+      action: 'rescheduled'
+    });
+
     // 5. Notify via WhatsApp
     try {
       const { date: dateStr, time: timeStr } = formatZoned(targetDate);
@@ -340,6 +346,11 @@ export const cancelClientBooking = async (req: any, res: Response) => {
       return res.status(400).json({ error: 'Este agendamento já foi cancelado.' });
     }
 
+    broadcastToEstablishment(String(appt.establishment_id), {
+      type: 'appointment_update',
+      action: 'cancelled'
+    });
+
     // Notify
     try {
       const { date: dateStr, time: timeStr } = formatZoned(apptTime);
@@ -392,6 +403,10 @@ export const cancelAllClientBookings = async (req: any, res: Response) => {
     }
 
     if (cancelledCount > 0) {
+      broadcastToEstablishment(String(apptsRes.rows[0].establishment_id), {
+        type: 'appointment_update',
+        action: 'cancelled'
+      });
       try {
         const msgText = `❌ *Agendamentos Cancelados*\n\nOlá, *${req.user.name}*!\n\nVocê cancelou *${cancelledCount} agendamentos futuros* de uma vez pelo nosso Portal de Clientes.`;
         await sendOrchestratedMessage(String(apptsRes.rows[0].establishment_id), req.user.phone, msgText);
@@ -543,6 +558,11 @@ export const clientBookAppointment = async (req: any, res: Response) => {
          RETURNING id`,
         [establishmentId, barberId, clientId, serviceId, targetDate.toISOString()]
       );
+
+      broadcastToEstablishment(String(establishmentId), {
+        type: 'appointment_update',
+        action: 'created'
+      });
     } catch (insertErr: any) {
       if (insertErr?.code === '23505') {
         return res.status(409).json({ error: 'This time slot is no longer available.' });
