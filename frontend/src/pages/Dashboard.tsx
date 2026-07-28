@@ -2142,7 +2142,7 @@ export const Dashboard: React.FC = () => {
 
   // Real-Time SSE (Server-Sent Events) Stream Connection for Live Chat Updates
   useEffect(() => {
-    if (activeTab !== 'chats' && adminSubTab !== 'support_chats') return;
+    if (!user?.establishment_id) return;
 
     const targetEstId = (user?.role === 'admin' && adminSubTab === 'support_chats')
       ? '00000000-0000-0000-0000-000000000000'
