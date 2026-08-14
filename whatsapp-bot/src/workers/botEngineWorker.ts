@@ -10,10 +10,10 @@ const redisPort = parseInt(process.env.REDIS_PORT || '6379', 10);
 const redisLockClient = new Redis({ host: redisHost, port: redisPort });
 
 const formatOptionLabel = (num: number): string => {
-  const numberEmojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
+  /*const numberEmojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟',];
   if (num >= 1 && num <= 10) {
     return numberEmojis[num - 1];
-  }
+  }*/
   return `*${num}.*`;
 };
 
